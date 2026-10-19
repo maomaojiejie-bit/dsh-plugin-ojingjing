@@ -226,4 +226,4 @@ ojingjing-widget/
 
 ## 许可
 
-MIT。鲸鱼轮廓取自 Twemoji `1f433`（CC-BY 4.0，© Twitter, Inc. and other contributors，[源文件](https://github.com/twitter/twemoji/blob/master/assets/svg/1f433.svg)），重绘了渐变与表情；署名与改动说明见本节及 `app/src/whale.js` 顶部注释。
+MIT。鲸鱼 SVG 造型与全部状态装饰为自绘；角色头像素材来自 [DeepSeek-Balance-Whale-Widget](https://github.com/lvxingye/DeepSeek-Balance-Whale-Widget)，换成自己的图后跑 `tools/prep-avatar.py` + `tools/build-plugin.mjs` 即可。

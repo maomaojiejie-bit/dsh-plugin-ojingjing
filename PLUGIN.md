@@ -233,6 +233,3 @@ Windows 不让删目录——旧脚本在删目录这步直接中断，就留下
 下次安装还会被绊一下。`uninstall.mjs` 现在：删不掉就改名为 `<包名>.removed-<时间戳>`
 （效果等同卸载，DSH 重启后加载不到它），每次运行顺手清这些残留，第 5 步校验把
 `dependencies` / `bundles` / 目录 / lockfile 四处都查一遍并直说还差哪儿。
-
-另：鲸鱼轮廓来自 Twemoji `1f433`（CC-BY 4.0, © Twitter, Inc. / X Corp.），
-颜色、渐变、表情与附属件为重绘；署名见 `web/static/src/whale.js` 顶部注释与 `README.md` 末节。

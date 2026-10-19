@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Bundled artwork notice: the character avatar in web/icon.png / app/src/avatar.webp
-and the whale SVG in app/src/whale.js were drawn/derived for this project; the whale
-outline is based on Twemoji 1f433 (CC-BY 4.0, © Twitter, Inc. / X Corp.,
-https://github.com/twitter/twemoji/blob/master/assets/svg/1f433.svg).
-Attribution and modification notes are also in README.md and the whale.js header.
