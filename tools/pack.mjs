@@ -23,7 +23,6 @@ const FILES = [
   "cordis.patch.yml",
   "README.md",
   "PLUGIN.md",
-  "NOTICE.md",
   "LICENSE",
   ".gitignore",
 ];

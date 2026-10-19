@@ -22,11 +22,11 @@ web/embed.js          # iframe 内：XJ.embed + 真数据 Harness（/xj/state、
 web/embed.css         # 嵌入态样式（透明底、隐藏演示桌面/原型控制台/输入区）
 web/inject.js         # 页面内注入版用（默认关闭 INJECT_IN_PAGE=false）
 web/static/src/**     # 原型源码副本（构建产物，来自 app/src/）
-NOTICE.md / LICENSE   # 随包发布（Twemoji 署名是 CC-BY 的要求）
+LICENSE               # 随包发布（MIT）
 ```
 
 `app/`（原型）、`standalone-py/`（桌面外壳）、`tools/`、`docs/` 是随仓库带的配套内容，
-**不在 `files` 白名单里**，`npm pack` 实测只出 32 个文件（`package.json` 的白名单就是安装边界的唯一真源：
+**不在 `files` 白名单里**，`npm pack` 实测只出 31 个文件（`package.json` 的白名单就是安装边界的唯一真源：
 `dsh plugin add` 按 tgz 装，`tools/install.mjs --direct` 直接照着它复制）。
 
 约定（与参考插件一致）：
@@ -150,9 +150,9 @@ npm.cmd publish --access public            # 已配 publishConfig.access=public
 ```
 
 包内容（`files` 白名单）：`lib/index.js`（宿主插件）、`web/**`（app.html + embed + static 前端）、
-`cordis.patch.yml`、`README.md`、`NOTICE.md`、`LICENSE`；**不含** `app/`、`docs/`、`tools/`、
+`cordis.patch.yml`、`README.md`、`LICENSE`；**不含** `app/`、`docs/`、`tools/`、
 `standalone-py/`（Python 外壳是独立程序，通过 `~/.dsh/ojingjing-shell.json` 联动）。`npm pack --dry-run`
-已验证清单（32 个文件）；`XJ_PLUGIN_ENTRY=<tgz 解出的 lib/index.js> node tools\test-host.mjs`
+已验证清单（31 个文件）；`XJ_PLUGIN_ENTRY=<tgz 解出的 lib/index.js> node tools\test-host.mjs`
 能跑完整套 `/xj/*` 契约断言（16 项全过）。
 
 ## 三、生效
@@ -235,5 +235,4 @@ Windows 不让删目录——旧脚本在删目录这步直接中断，就留下
 `dependencies` / `bundles` / 目录 / lockfile 四处都查一遍并直说还差哪儿。
 
 另：鲸鱼轮廓来自 Twemoji `1f433`（CC-BY 4.0, © Twitter, Inc. / X Corp.），
-颜色、渐变、表情与附属件为重绘；署名见 `web/static/src/whale.js` 顶部注释与
-`NOTICE.md`。
+颜色、渐变、表情与附属件为重绘；署名见 `web/static/src/whale.js` 顶部注释与 `README.md` 末节。

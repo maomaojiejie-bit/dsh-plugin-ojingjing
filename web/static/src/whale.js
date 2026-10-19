@@ -1,6 +1,7 @@
 /* =============================================================================
    whale.js · 鲸鱼 IP
-   造型来自 Twemoji「喷水鲸」🐳（CC-BY 4.0, © Twitter, Inc. / X Corp.），
+   造型来自 Twemoji「喷水鲸」🐳 1f433（CC-BY 4.0, © Twitter, Inc. / X Corp.，
+   源文件 https://github.com/twitter/twemoji/blob/master/assets/svg/1f433.svg），
    按设计稿重新着色为深海玻璃蓝，并拆成「身体 / 眼睛 / 眉毛 / 附属件」四层，
    供五种状态交叉过渡与静态帧降级使用（§7.6）。
    注意：外部素材只作为轮廓来源，颜色、渐变、高光、表情全部自绘。

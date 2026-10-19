@@ -24,7 +24,6 @@
     "web",
     "cordis.patch.yml",
     "README.md",
-    "NOTICE.md",
     "LICENSE"
   ],
   "dsh": {

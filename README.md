@@ -149,16 +149,16 @@ web/embed.css         # 嵌入态样式
 web/inject.js         # 页面内注入版（默认关闭，见 INJECT_IN_PAGE）
 web/icon.png          # 插件图标（tools/make-icon.mjs 生成；托盘/窗口图标也读它）
 web/static/src/**     # 构建产物：app/src/ 的副本，由 build-plugin.mjs 生成
-NOTICE.md  LICENSE
+LICENSE
 ```
 
-发布到 npm 的只有上面这些（`npm pack` 实测 32 个文件，约 243KB）。
+发布到 npm 的只有上面这些（`npm pack` 实测 31 个文件，约 243KB）。
 
 ## 仓库地图
 
 ```
 ojingjing-widget/
-├── package.json  cordis.patch.yml  README.md  PLUGIN.md  NOTICE.md  LICENSE
+├── package.json  cordis.patch.yml  README.md  PLUGIN.md  LICENSE
 ├── 安装到DSH.cmd            双击安装（只写 ASCII：cmd 按 OEM 码页读批处理，中文会乱码）
 ├── 从DSH卸载.cmd            双击卸载
 ├── lib/index.js            ② 宿主插件：apply(root) → approval/request · session/event · /xj/*
@@ -226,4 +226,4 @@ ojingjing-widget/
 
 ## 许可
 
-MIT。鲸鱼轮廓取自 Twemoji `1f433`（CC-BY 4.0，© Twitter, Inc. and other contributors），重绘了渐变与表情，署名见 [`NOTICE.md`](NOTICE.md)。
+MIT。鲸鱼轮廓取自 Twemoji `1f433`（CC-BY 4.0，© Twitter, Inc. and other contributors，[源文件](https://github.com/twitter/twemoji/blob/master/assets/svg/1f433.svg)），重绘了渐变与表情；署名与改动说明见本节及 `app/src/whale.js` 顶部注释。
