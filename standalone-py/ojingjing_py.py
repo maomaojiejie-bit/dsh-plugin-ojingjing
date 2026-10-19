@@ -156,14 +156,34 @@ def _use_hw_gl() -> bool:
     return False  # auto / sw 都走软件：先保证窗口看得见
 
 
+def _high_fps() -> bool:
+    """页面默认被合成器的 vsync 锁在 60 帧。开这个就解除限制，让动画跟着屏幕刷新率走。
+
+    实测（软件光栅 + 444x604 透明窗）解锁后 rAF 从 60 涨到 ~300，空闲 CPU 也从
+    约 0.5 核涨到 2.2 核 —— 所以默认关，只在 120/144Hz 屏上才划算。
+    """
+    forced = (os.environ.get("XJ_HIGH_FPS") or "").strip()
+    if forced in ("0", "1"):
+        return forced == "1"
+    try:
+        data = json.loads((CONFIG_DIR / "settings.json").read_text(encoding="utf-8"))
+        return bool((data or {}).get("highFps"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 RENDER_PREF = _render_pref()
+HIGH_FPS = _high_fps()
 HW_GL = _use_hw_gl()
+# 解除 vsync 的两个开关：--disable-gpu-vsync 让合成的 BeginFrame 不再等垂直同步，
+# --disable-frame-rate-limit 去掉 60 帧上限（只给前一个的话仍可能被限速）。
+_FPS_FLAGS = " --disable-gpu-vsync --disable-frame-rate-limit" if HIGH_FPS else ""
 if HW_GL:
     os.environ.setdefault("QT_OPENGL", "angle")
     os.environ.setdefault("QT_ANGLE_PLATFORM", "d3d11")
     os.environ.setdefault(
         "QTWEBENGINE_CHROMIUM_FLAGS",
-        "--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy",
+        "--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy" + _FPS_FLAGS,
     )
 else:
     os.environ.setdefault("QT_OPENGL", "angle")
@@ -174,7 +194,7 @@ else:
     # 所以问题在子进程本身而不是页面内容；--single-process 把它并回主进程就正常了。
     os.environ.setdefault(
         "QTWEBENGINE_CHROMIUM_FLAGS",
-        "--single-process --disable-gpu --no-sandbox",
+        "--single-process --disable-gpu --no-sandbox" + _FPS_FLAGS,
     )
 
 
@@ -615,6 +635,9 @@ DEFAULT_SETTINGS = {
     "exit_with_dsh": False,  # DSH 关掉约 1 分钟后自动退出（默认关，免得误杀）
     # sw = 软件（默认，窗口一定看得见）；hw = 硬件（更顺，个别机器上分层窗口不显示，实验性）
     "render": "sw",
+    # 解除合成器 60 帧上限（--disable-gpu-vsync + --disable-frame-rate-limit）。
+    # 120/144Hz 屏上更顺，代价是空闲 CPU 从约 0.5 核涨到约 2.2 核，所以默认关。
+    "highFps": False,
     "vision": {"base_url": "", "api_key": "", "model": ""},
     # 外观：avatar / background 都是本机图片的绝对路径（空 = 用内置），dim = 背景压暗程度 0–0.9
     "appearance": {"avatar": "", "background": "", "dim": 0.6},
@@ -674,6 +697,32 @@ def dsh_base() -> str:
 
 def app_url() -> str:
     return dsh_base() + "/xj/app.html?embed=1&host=py"
+
+
+# 页面第一次加载失败（插件正在重装、DSH 刚重启还没挂路由）时的自动重试节奏
+LOAD_RETRY_LIMIT = 24
+LOAD_RETRY_DELAY_MS = 1500
+
+
+def placeholder_html() -> str:
+    """加载失败时先显示这张小卡片，替代 Chromium 那句 not found。"""
+    return """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8" />
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font: 11px/1.4 "Microsoft YaHei UI", system-ui, sans-serif; color: #cfe4ff;
+    border-radius: 50%; background: rgba(13, 19, 32, 0.94);
+  }
+  .box { text-align: center; }
+  .dot {
+    width: 9px; height: 9px; margin: 0 auto 5px; border-radius: 50%;
+    background: #7cc4ff; animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+</style></head>
+<body><div class="box"><div class="dot"></div><div>连接中…</div></div></body></html>"""
 
 
 # ---- 外观：自定义头像 / 背景（图片读成 data URL 交给页面，页面里 XJ.app.applyAppearance 落地）
@@ -1081,10 +1130,33 @@ def main() -> None:
             self._size_timer.setSingleShot(True)
             self._size_timer.setInterval(40)
             self._size_timer.timeout.connect(self._flush_size)
+            # 「变大立刻、变小等一会」：页面收起时 formLeave 动画要 200ms，
+            # 窗口要是在动画中途缩一截，页面就得重新布局重绘，看起来就是一怔。
+            # 实测收起途中出现 4 帧 >50ms（最长 100ms），把缩窗口延后就没有了。
+            self._shrink_pending = None
+            self._shrink_timer = QTimer(self)
+            self._shrink_timer.setSingleShot(True)
+            self._shrink_timer.setInterval(240)
+            self._shrink_timer.timeout.connect(self._apply_shrink)
 
         def _flush_size(self) -> None:
             size, self._pending_size = self._pending_size, None
-            if size:
+            if not size:
+                return
+            w, h = size
+            # 变大（或和现在一样）：马上改，视觉上窗口跟着内容长出来
+            if w >= self.overlay.width() and h >= self.overlay.height():
+                self._shrink_pending = None
+                self._shrink_timer.stop()
+                self.overlay.apply_size(w, h)
+                return
+            # 变小：先记着，等页面里的收起动画播完再缩
+            self._shrink_pending = (w, h)
+            self._shrink_timer.start()
+
+        def _apply_shrink(self) -> None:
+            size, self._shrink_pending = self._shrink_pending, None
+            if size and (size[0] < self.overlay.width() or size[1] < self.overlay.height()):
                 self.overlay.apply_size(size[0], size[1])
 
         @Slot(int, int)
@@ -1544,6 +1616,9 @@ def main() -> None:
 
             self.resize(108, 108)
             self.place_initial()
+            # 页面第一次没起来时（插件正在重装 / DSH 还没挂上路由）的重试计数器
+            self._load_retries = 0
+            self._placeholder = False
             self.view.load(app_url())
             self.view.loadFinished.connect(self._on_load_finished)
             self.view.page().renderProcessTerminated.connect(self._on_render_crash)
@@ -1572,7 +1647,12 @@ def main() -> None:
 
         def _on_load_finished(self, ok: bool) -> None:
             log(f"loadFinished ok={ok}")
+            if self._placeholder:
+                # 这是「正在连接」那张占位页自己触发的，别当成加载成功
+                self._placeholder = False
+                return
             if ok:
+                self._load_retries = 0
                 self.apply_appearance()
                 self.bridge.push_shell_info()
                 return
@@ -1580,6 +1660,24 @@ def main() -> None:
             if HW_GL:
                 mark_gpu_failure("loadFinished ok=False")
                 QApplication.quit()
+                return
+            # 软件模式下页面加载失败，最常见的情况是「插件正在重装 / DSH 刚重启还没挂上路由」。
+            # 旧行为是把 Chromium 的错误页（一行 not found）留在桌面上直到用户自己重启外壳，
+            # 现在先换成一句人话，再自己隔 1.5 秒重试，最多约 36 秒。
+            if self._load_retries == 0:
+                self._placeholder = True
+                self.view.setHtml(placeholder_html())
+            self._load_retries += 1
+            if self._load_retries <= LOAD_RETRY_LIMIT:
+                log(f"页面加载失败，1.5 秒后重试（第 {self._load_retries} 次）")
+                QTimer.singleShot(LOAD_RETRY_DELAY_MS, self._retry_load)
+            else:
+                log("重试上限到了，停手；插件装好后按 Ctrl+Shift+Space 唤一下就好")
+
+        def _retry_load(self) -> None:
+            if self._load_retries > LOAD_RETRY_LIMIT:
+                return
+            self.view.load(app_url())
 
         def _on_render_crash(self, status, code: int) -> None:
             log(f"renderProcessTerminated status={status} code={code}")
@@ -1835,6 +1933,18 @@ def main() -> None:
             render_hint.setWordWrap(True)
             form.addRow("", render_hint)
 
+            # ---- 高帧率：解除 vsync，动画跟着屏幕刷新率走
+            self.high_fps = QCheckBox("高帧率（解除 60 帧限制，更吃 CPU）")
+            self.high_fps.setChecked(bool(cfg.get("highFps")))
+            form.addRow("", self.high_fps)
+            fps_hint = QLabel(
+                "当前：" + ("已解锁" if HIGH_FPS else "60 帧（合成器 vsync）")
+                + "。120/144Hz 屏才划算：实测解锁后空闲 CPU 从约 0.5 核涨到约 2.2 核。"
+            )
+            fps_hint.setStyleSheet("color:rgba(255,255,255,0.45);")
+            fps_hint.setWordWrap(True)
+            form.addRow("", fps_hint)
+
             self.autostart = QCheckBox("开机自动启动（写 HKCU\\...\\Run）")
             self.autostart.setChecked(is_autostart())
             form.addRow("", self.autostart)
@@ -1986,6 +2096,7 @@ def main() -> None:
                 "autostart": bool(self.autostart.isChecked()),
                 "exit_with_dsh": bool(self.exit_dsh.isChecked()),
                 "render": self.render.currentData(),
+                "highFps": bool(self.high_fps.isChecked()),
                 "vision": {
                     "base_url": self.vision_base.text().strip(),
                     "api_key": self.vision_key.text().strip(),
@@ -2051,20 +2162,26 @@ def main() -> None:
         if str(before.get("port")) != str(new_cfg.get("port")):
             log("port changed -> reload page")
             overlay.view.load(app_url())
-        if str(before.get("render") or "auto") != str(new_cfg.get("render") or "auto"):
+        if str(before.get("render") or "auto") != str(new_cfg.get("render") or "auto") or (
+            bool(before.get("highFps")) != bool(new_cfg.get("highFps"))
+        ):
+            changed_render = str(before.get("render") or "auto") != str(new_cfg.get("render") or "auto")
             label = {"auto": "自动", "hw": "硬件", "sw": "软件"}.get(str(new_cfg.get("render")), "自动")
+            what = f"渲染方式已改为「{label}」" if changed_render else (
+                "高帧率已" + ("打开" if new_cfg.get("highFps") else "关闭")
+            )
             ask = QMessageBox()
-            ask.setWindowTitle("渲染方式已改")
+            ask.setWindowTitle("需要重启")
             ask.setIcon(QMessageBox.Question)
-            ask.setText(f"渲染方式已改为「{label}」，要重启哦鲸鲸才生效。")
-            ask.setInformativeText("现在重启会先关掉当前窗口，再按新方式拉起（约两秒）。")
+            ask.setText(f"{what}，要重启哦鲸鲸才生效。")
+            ask.setInformativeText("现在重启会先关掉当前窗口，再按新设置拉起（约两秒）。")
             ask.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
             ask.button(QMessageBox.Yes).setText("现在重启")
             ask.button(QMessageBox.No).setText("稍后（下次启动生效）")
             if ask.exec() == QMessageBox.Yes:
                 _RESTART["pending"] = True
                 _RESTART["force_sw"] = None
-                log(f"render 改为 {new_cfg.get('render')} -> 重启")
+                log(f"渲染方式/高帧率已改（{new_cfg.get('render')}/highFps={new_cfg.get('highFps')}）-> 重启")
                 overlay.request_exit()
 
     act_settings = QAction("设置…", menu)

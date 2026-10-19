@@ -60,7 +60,7 @@ node tools/install.mjs --relaunch   # 装完自动把 DSH 拉起来
 | --- | --- |
 | 1 | 环境自检：Node 版本、npm、`dsh`、desktop profile 是否存在 |
 | 2 | 构建前端：`app/src` → `web/`（见[构建链路](#构建链路)） |
-| 3 | 打包：`npm pack` → `dist/dsh-plugin-ojingjing-0.4.0.tgz`（缓存写在仓库的 `.npm-cache/`） |
+| 3 | 打包：`npm pack` → `dist/dsh-plugin-ojingjing-<版本>.tgz`（缓存写在仓库的 `.npm-cache/`） |
 | 4 | **装进 DSH**：`dsh plugin add <tgz>`（走 DSH Desktop 自带的 dsh），补登记 `dsh.profile.bundles`，落地校验 |
 | 5 | 装 Python 依赖：没有 `standalone-py/.venv` 就建一个，再 `pip install -r requirements.txt`（PySide6，约 300MB，已装则跳过） |
 | 6 | 写自动拉起配置 `~/.dsh/ojingjing-shell.json`（DSH 起来时自动弹独立窗） |
@@ -110,7 +110,7 @@ node tools/uninstall.mjs --purge    # 连 .venv / data（含 API key）/ 日志 
 
 shim 是个批处理：里面先 `chcp 65001`，再用 `%*` 把参数展开给 Electron。这条链上任何一步按
 ANSI/OEM 代码页转码，含中文的参数就会变成乱码 —— 实测把
-`C:\...\Desktop\新建文件夹\ojingjing-widget\dist\dsh-plugin-ojingjing-0.4.0.tgz` 交给 pnpm 时，
+`C:\...\Desktop\新建文件夹\ojingjing-widget\dist\dsh-plugin-ojingjing-<版本>.tgz` 交给 pnpm 时，
 它变成 UTF-8-当-GBK 读的样子（`新建文件夹` → `鏂板缓鏂囦欢澶`），连结尾那个反斜杠都被双字节字符吞掉，
 pnpm 只能 exit 1，日志里还只留一句 `Command failed with exit code 1: pnpm add "…乱码…"`。
 
@@ -170,7 +170,7 @@ ojingjing-widget/
 ├── 安装到DSH.cmd            双击安装（纯 ASCII：cmd 按 OEM 码页读批处理，中文会乱码）
 ├── 从DSH卸载.cmd            双击卸载
 ├── 发布到GitHub.cmd          双击发版（= node tools/release.mjs：推代码 → 打 tag → 建 Release → 传 tarball）
-├── Ojingjing.spec            PyInstaller 打包独立窗 exe（tools/build-exe.mjs 一条龙：构建+裁语言包+盘点）
+├── Ojingjing.spec            PyInstaller 打包独立窗 exe（tools/build-exe.mjs 一条龙：构建+瘦身+盘点）
 ├── OjingjingDebug.spec       同上，带控制台版
 ├── lib/index.js            ② 宿主插件（单文件）：apply(root) → session/event · approval/request · /xj/*
 ├── web/                    ② 插件静态资源（app.html、static/ 是 build-plugin 的产物）
@@ -204,7 +204,7 @@ cordis.patch.yml      # - insert: [{ id: dsh-plugin-ojingjing, name: dsh-plugin-
 lib/index.js          # 宿主插件入口：export default { name, apply(root) }
 lib/usage.js          # 用量账本：token → 人民币（峰谷价目表）+ DeepSeek 余额（60s 缓存）
 web/app.html          # tools/build-plugin.mjs 从 app/index.html 生成（别手改）
-web/embed.js          # 页面侧：XJ.embed + 真数据 harness（/xj/state、/xj/decide、/xj/prompt）
+web/embed.js          # 页面侧：XJ.embed + 真数据 harness（/xj/state、/xj/decide、/xj/answer、/xj/prompt）
 web/embed.css         # 嵌入态样式
 web/inject.js         # 页面内注入版（默认关闭，见 lib/index.js 的 INJECT_IN_PAGE = false）
 web/icon.png          # 插件图标（tools/make-icon.mjs 生成；托盘 / 窗口图标也读它）
@@ -226,6 +226,7 @@ README.md  LICENSE
 | `GET /xj/usage` | 今日花费 / 分会话花费 / DeepSeek 余额（读缓存，不阻塞） |
 | `POST /xj/usage` | 强制刷一次余额（面板上那个小刷新按钮就是它） |
 | `POST /xj/decide` | 通过 / 拒绝某个审批（带幂等键，撞 409 表示已在别处处理） |
+| `POST /xj/answer` | 回答 Agent 的提问（带选项的那种）：整批 `{id, answers:[{id,selected,custom}]}` 或单问 `{id, selected, custom}` |
 | `POST /xj/prompt` | 截图提问：图片以 data URL 内联，投进指定会话的 `prompt()` |
 | `GET /xj/app.html` | 浮窗页面本体 |
 | `GET /xj/static/*` | 页面静态资源 |
@@ -313,11 +314,19 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
 
 - 宿主插件已装进 desktop profile，`/xj/state` 返回真实会话；独立窗由 DSH 启动时拉起（或双击 `standalone-py/启动哦鲸鲸.cmd`）。
 - 已接真数据：四形态渲染、状态真值表、双角标、未读制、内嵌审批（通过 / 拒绝 / 幂等 / 409 竞态）、截图提问、用量与余额。
+- 提问也能在浮窗里答：Agent 通过 `ask_user_question` 抛出来的选项会渲染成按钮，单选题点一下就回、多选题勾完按提交，
+  没选项或者想自己说就点「其它…」打字（回车发送）；答完卡片自己收掉，主界面那边同时解除等待。
 - 面板里那条「今日 ¥ / 余额 ¥」来自插件账本（见上文「用量从哪来」），每个会话卡右侧还会标这个会话今天花了多少。
 - 闲置搭话：`settings.idleNudgeMin`（默认 6 分钟，`设置 → 提醒 → 闲着主动说句话` 可调）内没有鼠标/键盘动作，
   鲸鱼会自己浮上来冒个泡；没人理就 14 秒后沉回去，连着被忽略会自己把间隔拉长到最多 45 分钟。
 - 设置面板「其它」分组接的是本仓库：反馈问题 / 更新日志 / 关于直接开对应页面，「检查更新」拿当前版本比 GitHub Release 的 tag。
 - 工作态提示是鲸鱼头顶三颗泡泡绕圈（外圈虚线反向慢转）；软件光栅模式下放慢到 2.4s/圈但不停，滚动时让出帧。
+- 独立窗能打成绿色 exe：`node tools\build-exe.mjs` → `dist\Ojingjing\`（约 2 分钟，**329 MB**，裁掉 141 个
+  调试资源/语言包之后；exe 本体只有 1.9 MB，其余是 QtWebEngine 内核）。exe 只是外壳，页面仍从
+  DSH 的 `/xj/app.html` 取，所以 DSH 得开着。细节见 [`standalone-py/README.md`](standalone-py/README.md)。
+- 动画帧率：QtWebEngine 默认被 vsync 锁在 60fps（实测 58–59，帧间隔中位数 16.7ms）；设置里另有
+  「高帧率（实验）」。软件光栅下把工作环改成 `steps(48)` 之后空闲 CPU 从 43% 降到 21%，收起时窗口
+  延后 240ms 再缩，200ms 的离场动画不会被窗口裁掉。
 - 还没接：会话卡「停止」、输入条发文字、拖文件进会话（按钮已隐藏，不会点了报错）、点击穿透。
 - DSH 插件宿主跑在 `utilityProcess` 里，拿不到 `BrowserWindow`，所以跨应用常驻必须靠 `standalone-py/` 这个独立程序。
 - 状态真值表（`app/src/state.js`）：**需要确认 > 工作中 > 完成未读 > 空闲 > 离线**；离线时整体灰度 + 光环转虚线。
@@ -325,9 +334,9 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
 
 ## 隐私与安全
 
-- 只监听**状态事件**与**审批请求**，不读对话正文；命令 / 参数只在内存里拼一句摘要，不落盘。
+- 只监听**状态事件**、**审批请求**与**提问请求**，不读对话正文；命令 / 参数只在内存里拼一句摘要，不落盘。
 - 所有 `/xj/*` 路由只接受回环 Host（`127.0.0.1` / `localhost` / `[::1]`）；带 `Origin` 时必须同源；
-  写操作（`/xj/decide`、`/xj/prompt`）只收 `POST`。
+  写操作（`/xj/decide`、`/xj/answer`、`/xj/prompt`）只收 `POST`。
 - 截图提问的像素只在内存里过一手（`QBuffer`），不写临时文件；单张上限 8MB（外观图）/ 20MiB（投递）。
 - 视觉模型（「✨ 优化」）是可选项，不配就不发任何外部请求；配了走你自己填的 OpenAI 兼容端点。
 

@@ -34,6 +34,7 @@
     reconnect,
     toggleDndQuick,
     decideApproval,
+    answerQuestion,
     stopSession,
     orbPointerDown,
     orbHoverStart,
@@ -925,8 +926,21 @@
         break;
 
       case "question.requested":
-        A().questionRequested({ id: p.question_id, sessionId: p.session_id, text: p.text });
+        A().questionRequested({
+          id: p.question_id,
+          sessionId: p.session_id,
+          text: p.text,
+          questions: p.questions || [],
+        });
         loudReminder("question");
+        break;
+
+      case "question.resolved":
+        // 主界面那边答完了（或者提问被撤）：把卡片摘掉，别再让用户点
+        A().approvalResolved(p.question_id, p.decision || "answered", p.by || "web");
+        if (p.by === "web") {
+          XJ.ui.toast({ type: "info", title: "已在主窗口回答", sub: "浮窗这边的提问已收起" });
+        }
         break;
 
       case "approval.resolved":
@@ -1081,6 +1095,39 @@
         XJ.ui.toast({ type: "info", title: "这个审批已经不在了" });
       } else if (code === 422) {
         A().approvalFailed(item.id, (err && err.hint) || "这个操作不支持「本会话内都允许」");
+      } else {
+        A().approvalFailed(item.id, "没发出去，重试？");
+      }
+    }
+  }
+
+  /* ---------------- 提问（选项按钮） ---------------- */
+  /**
+   * 回答一个提问批次。
+   * @param item  state.js 里的 question 条目（带 questions[]）
+   * @param answers [{ id, selected: [选项标签], custom?: 自定义文本 }]
+   */
+  async function answerQuestion(item, answers) {
+    const s = S();
+    if (!item) return;
+    if (s.connection === "offline") {
+      XJ.ui.toast({ type: "warn", title: "连接已断开，恢复后可操作" });
+      return;
+    }
+    A().approvalSubmitting(item.id);
+    try {
+      await XJ.mock.harness.answer(item.id, { answers });
+      A().approvalResolved(item.id, "answered", "widget");
+      XJ.platform.playChime("approved");
+      XJ.ui.toast({ type: "success", title: "已回复", sub: "Agent 接着往下做了" });
+    } catch (err) {
+      const code = err && err.code;
+      if (code === 409) {
+        A().approvalResolved(item.id, "answered", "web");
+        XJ.ui.toast({ type: "info", title: "这个问题已经在别处回答过了" });
+      } else if (code === 503) {
+        A().approvalFailed(item.id, "这个外壳还不支持直接回答，去主界面回吧");
+        XJ.app.openMainWindow();
       } else {
         A().approvalFailed(item.id, "没发出去，重试？");
       }

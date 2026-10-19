@@ -154,9 +154,11 @@
     constructor() {
       this.sessions = [];
       this.pending = [];
+      this.questions = [];
       this.connection = "online";
       this.subs = new Set();
       this.known = new Map();
+      this.knownQuestions = new Map();
       this.timer = null;
       this.failures = 0;
       this.ticks = 0;
@@ -211,6 +213,24 @@
         }
         this.known = next;
         this.pending = data.pending || [];
+        // 提问（带选项那种）：跟审批一样靠「新出现 / 消失了」发事件，
+        // 消失了就说明客户端已经答过（或者提问被撤），界面上把卡片摘掉即可。
+        const nextQ = new Map((data.questions || []).map((q) => [q.id, q]));
+        for (const [id, q] of nextQ) {
+          if (this.knownQuestions.has(id)) continue;
+          this.emit("question.requested", {
+            question_id: id,
+            session_id: q.session_id,
+            session_title: q.session_title,
+            questions: q.questions || [],
+          });
+        }
+        for (const id of this.knownQuestions.keys()) {
+          if (nextQ.has(id)) continue;
+          this.emit("question.resolved", { question_id: id, decision: "answered", by: "web" });
+        }
+        this.knownQuestions = nextQ;
+        this.questions = data.questions || [];
         if (this.connection !== "online") {
           this.connection = "online";
           this.emit("connection.online", {});
@@ -250,8 +270,25 @@
         connection: this.connection,
         sessions: this.sessions,
         pending: this.pending,
+        questions: this.questions,
         usage: this.usage,
       };
+    }
+
+    /** 回答提问：payload = { answers: [{ id, selected: [...], custom? }] } */
+    async answer(id, payload) {
+      const res = await fetch("/xj/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(Object.assign({ id }, payload || {})),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const err = new Error(body.error || "answer failed");
+        err.code = res.status;
+        throw err;
+      }
+      return await res.json();
     }
 
     async decide(id, opts) {

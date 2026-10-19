@@ -179,11 +179,14 @@ if (opts.dryRun) {
 
 say("\n【1/2】PyInstaller 构建（首次约 1–2 分钟）");
 const t0 = Date.now();
+// PyInstaller 默认把二进制缓存（bincache）写到 %LOCALAPPDATA%\pyinstaller，受限环境里
+// 那个目录不可写，会在最后 COLLECT 阶段以 PermissionError 失败。指到仓库里就一劳永逸。
+const PYI_CACHE = path.join(ROOT, ".pyinstaller");
 const build = spawnSync(py, pyiArgs, {
   cwd: ROOT,
   stdio: "inherit",
   windowsHide: true,
-  env: { ...process.env, ...pyEnv },
+  env: { ...process.env, ...pyEnv, PYINSTALLER_CONFIG_DIR: PYI_CACHE },
 });
 if (build.status !== 0) die(`PyInstaller 失败（退出码 ${build.status}）`);
 if (!fs.existsSync(path.join(DIST, OUT_NAME + ".exe"))) die(`构建完没看到 ${path.join(path.relative(ROOT, DIST), OUT_NAME + ".exe")}`);
@@ -196,7 +199,7 @@ if (opts.trim) {
     stdio: "inherit",
     windowsHide: true,
   });
-  if (trim.status !== 0) warn("trim-dist 失败了，产物没裁语言包（体积偏大，功能不受影响）");
+  if (trim.status !== 0) warn("trim-dist 失败了，产物没瘦身（体积偏大，功能不受影响）");
 }
 
 /* ---------------------------------------------------------------- 盘点 */
@@ -234,7 +237,7 @@ biggest.sort((a, b) => b.s - a.s);
 
 say("");
 say(`产物：${path.relative(ROOT, DIST)}  合计 ${mb} MB`);
-info(`exe 本体 ${(exe / 1024 / 1024).toFixed(2)} MB（其余是 QtWebEngine 内核，删不得）`);
+info(`exe 本体 ${(exe / 1024 / 1024).toFixed(2)} MB（其余是 QtWebEngine 内核 / Qt 运行库 / ICU，删不得）`);
 for (const b of biggest.slice(0, 6)) info(`  ${(b.s / 1024 / 1024).toFixed(1)} MB  ${b.p}`);
 say("");
 say("分发：把整个目录拷走即可（绿色软件，无需安装）。");

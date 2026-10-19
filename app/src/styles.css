@@ -650,6 +650,11 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
 .stage .form.xj-leaving {
   overflow: hidden;
   pointer-events: none;
+  /* 离场时这层已经盖在「新内容」上面淡出，没人会盯着它的阴影看：
+     关掉大范围 box-shadow、把布局/绘制限制在自己身上，动画期间少一大片重绘。 */
+  box-shadow: none;
+  contain: layout paint;
+  will-change: height, opacity;
   animation: formLeave 200ms var(--ease-out) forwards;
 }
 @keyframes formLeave {
@@ -2943,6 +2948,139 @@ body.static-frame .aura-amber {
   color: var(--accent-soft);
   border: 1px solid rgba(124, 194, 255, 0.3);
 }
+/* 提问卡的选项：点一下就是回答（单选直接发，多选先勾再提交） */
+.q-block + .q-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.q-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.q-chip {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: rgba(124, 194, 255, 0.14);
+  color: var(--accent-soft);
+}
+.q-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.q-text {
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  font-weight: 500;
+  margin-bottom: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.q-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.q-options {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0 2px;
+}
+.q-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font-size: var(--fs-aux);
+  line-height: 1.35;
+  transition: background var(--dur-hover) var(--ease-soft), border-color var(--dur-hover) var(--ease-soft),
+    transform var(--dur-hover) var(--ease-soft);
+}
+.q-option:hover:not(:disabled) {
+  background: rgba(124, 194, 255, 0.14);
+  border-color: rgba(124, 194, 255, 0.4);
+}
+.q-option:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.q-option.on {
+  background: rgba(124, 194, 255, 0.2);
+  border-color: rgba(124, 194, 255, 0.55);
+}
+.q-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.q-option-desc {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+.q-submit {
+  height: 28px;
+  font-size: var(--fs-aux);
+  padding: 0 14px;
+  margin: 6px 0 2px;
+}
+.q-custom {
+  margin-top: 6px;
+}
+.q-custom-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: color var(--dur-hover) var(--ease-soft), background var(--dur-hover) var(--ease-soft);
+}
+.q-custom-toggle:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+.q-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+.q-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(9, 14, 26, 0.5);
+  color: var(--text-primary);
+  font-size: var(--fs-aux);
+  font-family: inherit;
+}
+.q-input:focus {
+  outline: none;
+  border-color: rgba(124, 194, 255, 0.5);
+}
+.q-send {
+  height: 30px;
+  font-size: var(--fs-aux);
+  padding: 0 14px;
+  flex: none;
+}
 /* 多张待确认时，面板只钉一张 + 这条去审批中心的引路条 */
 .more-pending {
   display: flex;
@@ -3338,9 +3476,13 @@ html.xj-sw .sess-card.working .progress:not(.done) > i::after {
 }
 
 /* 工作环放慢但不许停：1.5s/圈 → 2.4s/圈。虚线外圈在软件光栅里干脆不转，
-   少一层每帧要重画的区域，视觉上靠三颗泡泡已经足够读出「在转」。 */
+   少一层每帧要重画的区域，视觉上靠三颗泡泡已经足够读出「在转」。
+   steps(48)：这一圈要 2.4 秒，一秒 20 步肉眼完全看不出台阶，但合成次数少了 2/3。
+   实测（444x604 透明窗、软件光栅）空闲 CPU 从约 43% 掉到约 21% —— 因为这类窗口
+   的重绘是一整块 UpdateLayeredWindow，省下来的 CPU 正好留给悬停/展开那些真需要 60 帧的动画。 */
 html.xj-sw .whale.st-focus .orbit-arm {
   animation-duration: 2.4s;
+  animation-timing-function: steps(48, end);
 }
 html.xj-sw .whale.st-focus .orbit-track {
   animation: none !important;

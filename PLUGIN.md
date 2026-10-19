@@ -18,7 +18,7 @@ cordis.patch.yml      # - insert: [{ id: dsh-plugin-ojingjing, name: dsh-plugin-
 lib/index.js          # 入口：export default { name, apply(root) { … } }
 web/icon.png          # 插件图标（也是托盘/exe 的来源）
 web/app.html          # 由 tools/build-plugin.mjs 从 app/index.html 生成
-web/embed.js          # iframe 内：XJ.embed + 真数据 Harness（/xj/state、/xj/decide、/xj/prompt）
+web/embed.js          # iframe 内：XJ.embed + 真数据 Harness（/xj/state、/xj/decide、/xj/answer、/xj/prompt）
 web/embed.css         # 嵌入态样式（透明底、隐藏演示桌面/原型控制台/输入区）
 web/inject.js         # 页面内注入版用（默认关闭 INJECT_IN_PAGE=false）
 web/static/src/**     # 原型源码副本（构建产物，来自 app/src/；esbuild minify + 剥离 mock/devbar）
@@ -125,7 +125,7 @@ node tools\uninstall.mjs --purge         # 连 .venv / data（含 API key）/ �
 
 ```powershell
 # 用 Desktop 那个 shim，别用全局 dsh，否则被静态校验拒掉
-"%APPDATA%\DSH Desktop\host-commands\desktop\generations\<hash>\bin\dsh.cmd" plugin --profile desktop add "dist\dsh-plugin-ojingjing-0.4.0.tgz"
+"%APPDATA%\DSH Desktop\host-commands\desktop\generations\<hash>\bin\dsh.cmd" plugin --profile desktop add "dist\dsh-plugin-ojingjing-<版本>.tgz"
 # dsh plugin 只等价于 pnpm add，不一定写 dsh.profile.bundles，装完要自己检查/登记
 ```
 
@@ -136,14 +136,14 @@ node tools\uninstall.mjs --purge         # 连 .venv / data（含 API key）/ �
 
 ```powershell
 cd C:\Users\17897\Desktop\新建文件夹\ojingjing-widget
-npm.cmd pack --pack-destination dist        # → dist\dsh-plugin-ojingjing-0.4.0.tgz（约 230KB，30 个文件）
+npm.cmd pack --pack-destination dist        # → dist\dsh-plugin-ojingjing-<版本>.tgz（约 230KB，30 个文件）
 ```
 
 对方拿到 tarball 后：
 
 ```powershell
 cd $env:USERPROFILE\.dsh\profiles\desktop
-npm.cmd install --no-save "C:\path\to\dsh-plugin-ojingjing-0.4.0.tgz"
+npm.cmd install --no-save "C:\path\to\dsh-plugin-ojingjing-<版本>.tgz"
 # 再在 package.json 的 dsh.profile.bundles 里加 "dsh-plugin-ojingjing"
 ```
 
@@ -187,6 +187,7 @@ node tools\check-plugin.mjs     # 探测 /xj/state、/xj/app.html 是否可用
 | 四形态（收起 / 气泡 / 快捷输入条线框 / 面板） | ✅ 真渲染 |
 | 状态真值表、双角标、未读制 | ✅ 接真实 `session/event` |
 | 内嵌审批（通过 / 拒绝 / 幂等 / 409 竞态） | ✅ 接 `approval/request` |
+| 提问选项按钮（单选点一下 / 多选勾完提交 / 「其它…」打字） | ✅ 接 `user-questions/request`，回填走 `POST /xj/answer` |
 | 截图提问（独立窗 `Ctrl+Shift+A` → 整屏 → 进会话） | ✅ 新增 `POST /xj/prompt` → `ctx.sessionController.prompt(...)`，图片走内联 base64 |
 | 用量与余额（面板「今日 ¥ / 余额 ¥」+ 会话卡单价） | ✅ `lib/usage.js`：从 `assistant/message` 的真实 usage 按峰谷价目表折算，余额读 DeepSeek `/user/balance`（60s 缓存） |
 | 会话卡「停止」、输入条发文字、拖文件 | ⛔ 宿主侧还没接（按钮已隐藏，不会点了报错） |

@@ -180,6 +180,32 @@
     }
 
     /* ----- 审批决策（§11.3.2） ----- */
+    /** 回答提问：{ answers: [{ id, selected: [...], custom? }] } */
+    async answer(questionId, opts) {
+      await wait(this.latency + Math.random() * 160);
+      if (!this.connected) throw { code: 503, error: "harness_unavailable" };
+      const q = this.questions.get(questionId);
+      if (!q) throw { code: 404, error: "not_found" };
+      if (q.status !== "pending") throw { code: 409, error: "already_answered", by: "web" };
+      q.status = "answered";
+      q.answers = (opts && opts.answers) || [];
+      q.answeredBy = "widget";
+      this.emit("question.resolved", {
+        question_id: questionId,
+        decision: "answered",
+        by: "widget",
+      });
+      const sess = this.sessions.find((s) => s.id === q.sessionId);
+      if (sess) {
+        sess.state = "working";
+        sess.action = "按你的选择继续";
+        sess.progress = Math.max(sess.progress, 12);
+        sess.lastActivityAt = Date.now();
+        this.emit("sessions.changed", { sessions: this.sessions.map((s) => ({ ...s })) });
+      }
+      return { question_id: questionId, ok: true };
+    }
+
     async decide(approvalId, opts) {
       const { decision, idempotencyKey, scope } = opts;
       await wait(this.latency + Math.random() * 160);
@@ -287,11 +313,26 @@
 
     pushQuestion(text) {
       const id = "q_" + uid("x").slice(2);
-      this.questions.set(id, { id, status: "pending" });
+      const sessionId = this.sessions[0] && this.sessions[0].id;
+      this.questions.set(id, { id, status: "pending", sessionId });
       this.emit("question.requested", {
         question_id: id,
-        session_id: this.sessions[0] && this.sessions[0].id,
+        session_id: sessionId,
         text: text || "这个接口要不要兼容旧版本？",
+        questions: [
+          {
+            id: "q1",
+            header: "兼容性",
+            question: text || "这个接口要不要兼容旧版本？",
+            detail: "旧版本还有 3 个调用方在用，删掉会直接 400。",
+            options: [
+              { label: "保留旧字段", description: "多写一层兼容分支" },
+              { label: "直接删掉", description: "三个调用方一起改" },
+              { label: "先标记废弃", description: "下个版本再删" },
+            ],
+            multiSelect: false,
+          },
+        ],
       });
       return id;
     }

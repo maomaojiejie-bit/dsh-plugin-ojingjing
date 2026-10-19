@@ -185,12 +185,154 @@
   }
 
   /**
-   * 提问卡：Agent 在等用户回答问题。
-   * 浮窗只做「告诉你 + 带你去回答」，真正的回答在主界面（§5 F4 只内嵌审批）。
+   * 提问卡：Agent 在等用户回答问题，选项直接点、文字直接在框里打。
+   * - 单选题：点一下选项就发出去了（再点别的已经来不及，卡片会自己收掉）
+   * - 多选题：先勾，勾完按「提交」
+   * - 「其它…」：自己打字，单选题下会覆盖已选中的选项（DSH 的约定）
+   * 没有选项也没有多题的提问，就只剩一个输入框 —— 等同在主界面回。
    */
   function questionCard(s, item) {
     const sess = XJ.state.sessionById(s, item.sessionId);
     const presenting = XJ.state.presenting(s);
+    const pending = item.status === "pending" || item.status === "failed";
+    const ui = s.ui;
+    ui.questionLocal = ui.questionLocal || {};
+    const local = (ui.questionLocal[item.id] = ui.questionLocal[item.id] || {
+      picked: {},
+      draft: {},
+      customOpen: {},
+    });
+    const list =
+      Array.isArray(item.questions) && item.questions.length
+        ? item.questions
+        : [{ id: item.id, question: item.text || "", options: [] }];
+
+    const send = (answers) => XJ.app.answerQuestion(item, answers);
+
+    const submit = (q, selected, custom) => {
+      if (!pending) return;
+      send([{ id: q.id, selected: selected || [], custom: custom || undefined }]);
+    };
+
+    const block = (q, i) => {
+      const options = Array.isArray(q.options) ? q.options : [];
+      const picked = local.picked[q.id] || [];
+      const multiple = !!q.multiSelect;
+      const open = !!local.customOpen[q.id];
+      const kids = [];
+
+      kids.push(
+        h(
+          "div",
+          { class: "q-head" },
+          q.header ? h("span", { class: "q-chip" }, q.header) : null,
+          list.length > 1 ? h("span", { class: "q-count" }, i + 1 + "/" + list.length) : null
+        )
+      );
+      kids.push(h("div", { class: "q-text" }, q.question || item.text || "Agent 想问你一个问题"));
+      if (q.detail) kids.push(h("div", { class: "q-detail" }, q.detail));
+
+      if (options.length) {
+        kids.push(
+          h(
+            "div",
+            { class: "q-options" + (presenting ? " is-quiet" : "") },
+            options.map((o) =>
+              h(
+                "button",
+                {
+                  class: "q-option" + (picked.indexOf(o.label) >= 0 ? " on" : ""),
+                  disabled: !pending,
+                  title: o.description || o.label,
+                  onclick: () => {
+                    if (!pending) return;
+                    if (multiple) {
+                      local.picked[q.id] =
+                        picked.indexOf(o.label) >= 0
+                          ? picked.filter((x) => x !== o.label)
+                          : picked.concat([o.label]);
+                      A().patchSettings({});
+                    } else {
+                      submit(q, [o.label], "");
+                    }
+                  },
+                },
+                h("span", { class: "q-option-label" }, o.label),
+                o.description ? h("span", { class: "q-option-desc" }, o.description) : null
+              )
+            )
+          )
+        );
+        if (multiple) {
+          kids.push(
+            h(
+              "button",
+              {
+                class: "btn-solid q-submit",
+                disabled: !pending || !picked.length,
+                onclick: () => submit(q, picked, ""),
+              },
+              "提交"
+            )
+          );
+        }
+      }
+
+      kids.push(
+        h(
+          "div",
+          { class: "q-custom" },
+          h(
+            "button",
+            {
+              class: "q-custom-toggle",
+              onclick: () => {
+                local.customOpen[q.id] = !open;
+                A().patchSettings({});
+              },
+            },
+            XJ.icon("chat", 12),
+            open ? "收起" : options.length ? "其它…" : "回答"
+          ),
+          open
+            ? h(
+                "div",
+                { class: "q-custom-row" },
+                h("input", {
+                  class: "q-input",
+                  type: "text",
+                  placeholder: q.placeholder || "直接打字回复",
+                  value: local.draft[q.id] || "",
+                  oninput: (e) => {
+                    local.draft[q.id] = e.target.value;
+                  },
+                  onkeydown: (e) => {
+                    if (e.key !== "Enter" || e.isComposing) return;
+                    e.preventDefault();
+                    const t = (local.draft[q.id] || "").trim();
+                    if (t) submit(q, [], t);
+                  },
+                }),
+                h(
+                  "button",
+                  {
+                    class: "btn-solid q-send",
+                    disabled: !pending,
+                    onclick: () => {
+                      const t = (local.draft[q.id] || "").trim();
+                      if (t) submit(q, [], t);
+                    },
+                  },
+                  "发送"
+                )
+              )
+            : null
+        )
+      );
+
+      return h("div", { class: "q-block" }, kids);
+    };
+
     return h(
       "div",
       { class: "approval-card question-card" },
@@ -200,31 +342,14 @@
         h("span", { class: "risk risk-question" }, "提问"),
         h("span", { class: "appr-session ellipsis" }, "《" + (sess ? XJ.state.displayTitle(s, sess) : "未知会话") + "》"),
         h("span", { class: "spacer" }),
-        XJ.ui.waitNode(item.waitingSince, item.id)
+        item.status === "submitting"
+          ? h("span", { class: "appr-wait" }, "提交中…")
+          : XJ.ui.waitNode(item.waitingSince, item.id)
       ),
-      h(
-        "div",
-        { class: "appr-summary" },
-        presenting ? "Agent 有一个问题等你回答" : item.text || "Agent 想问你一个问题"
-      ),
-      h(
-        "div",
-        { class: "appr-actions" },
-        h(
-          "button",
-          {
-            class: "btn-solid",
-            onclick: () => {
-              A().sessionViewed(item.sessionId);
-              A().approvalResolved(item.id, "answered", "widget");
-              XJ.app.openMainWindow();
-              XJ.ui.toast({ type: "info", title: "去主界面回答", sub: "这个问题需要输入文字，浮窗里不处理" });
-            },
-          },
-          XJ.icon("chat", 13),
-          "去回答"
-        )
-      )
+      list.map(block),
+      item.status === "failed"
+        ? h("div", { class: "appr-state err" }, XJ.icon("alert", 13), item.error || "没发出去")
+        : null
     );
   }
 

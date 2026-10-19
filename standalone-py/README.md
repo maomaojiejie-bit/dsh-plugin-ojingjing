@@ -177,6 +177,41 @@ QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --ignore-gpu-blocklist --enable-gpu-rast
   `tools/dev/wheel-check.mjs` 抽样验证缓动是否生效（scrollTop 应该是一列间距递减的值）。
 - 不要用 `QT_OPENGL=software`（swiftshader）：本机上窗口一放大（面板 444×604）渲染进程就会退出，
   现象是「点开面板窗口就消失」，日志停在 `resize 444x604`。
+- 帧率上限：QtWebEngine 默认被 vsync 锁在 60fps（实测 58–59fps，帧间隔中位数 16.7ms）。设置里的
+  「高帧率（实验）」= `highFps`，加 `--disable-gpu-vsync --disable-frame-rate-limit`，rAF 能到 300fps；
+  但软件光栅下重绘是整块 `UpdateLayeredWindow`，实测空闲 CPU 从 43% 涨到 215%，所以默认关，
+  只在硬件模式值得试。临时试：`$env:XJ_HIGH_FPS = "1"`。
+- 收起时窗口不立刻缩：`_shrink_timer` 延迟 240ms 再缩到球的尺寸，让 200ms 的离场动画先播完，
+  否则右边缘会被裁一截（窗口比内容更早缩小）。
+
+## 打包成 exe（绿色版）
+
+```powershell
+node tools\build-exe.mjs     # PyInstaller 构建 + 瘦身 + 盘点，约 2 分钟
+```
+
+产物在 `dist\Ojingjing\`，整个目录拷走就能用，不需要装 Python / PySide6：
+
+| 项 | 体积 |
+|---|---|
+| `Ojingjing.exe` | 1.9 MB（壳） |
+| `_internal\` 合计 | 327 MB（QtWebEngine 内核 194 MB、Qt 运行库 ~30 MB、ICU 10 MB、PySide6 插件 6 MB） |
+| **整个目录** | **329 MB**（未瘦身是 425 MB） |
+
+`tools/trim-dist.mjs` 负责最后一刀，规则和理由都写在脚本头部：Chromium 语言包只留中英 4 个、
+`resources\*.debug.pak`（含 72 MB 的 devtools debug pak）、devtools 前端、Qt 的 `.qm` 翻译——
+合计 141 个文件 / 95.9 MB。**故意不删** `opengl32sw.dll`（19.7 MB，没有可用 D3D11 时的兜底光栅）
+和 `icudtl.dat`（10 MB，中文与编码全靠它）。
+
+两点必须知道：
+
+1. **exe 只是外壳，页面还是从 DSH 取**（`http://127.0.0.1:43120/xj/app.html?embed=1&host=py`）。
+   DSH 没开时窗能起来，但页面连不上宿主。
+2. **配置落在 exe 同级的 `data\`**，不是 `%APPDATA%\ojingjing`：本机有安全软件拦 python 往 Roaming
+   写文件（`Roaming\ojingjing` 的 ACL 是用户全开，PowerShell 能写、python 报 `Errno 13`，属进程级
+   拦截），`_writable_dir` 于是退到程序目录。副作用：「venv 里跑」和「exe 跑」两份设置互不相通；
+   把 exe 放进只读目录就别指望存设置。
+
 
 ## 落盘
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-ojingjing",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "哦鲸鲸 · DeepSeek Harness 桌面右下角常驻悬浮窗：四形态、状态真值表、双角标、内嵌审批闭环；截图提问直接投进会话。只读任务状态，不读对话正文。",
   "keywords": [
     "dsh",

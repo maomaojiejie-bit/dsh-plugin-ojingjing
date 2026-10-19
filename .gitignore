@@ -22,3 +22,7 @@ build-poc/
 
 # ---- 鏈湴浠ｇ悊宸ヤ綔鍖烘暟鎹紙涓嶄笂浼狅級 ----
 .workbuddy/
+.pyinstaller/
+
+# ---- PyInstaller 中间目录（正式输出在 dist/）----
+build/

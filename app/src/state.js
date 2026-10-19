@@ -95,6 +95,7 @@
         screenshot: null, // 截图状态机（§9.2.2）
         stopConfirmSessionId: null,
         approvalDetailId: null,
+        questionLocal: {}, // 提问卡的本地交互态 { [id]: { picked, draft, customOpen } }
         line: null, // 当前台词 { text, ctx, at }（lines.js 抽，hover 时刷新）
       },
       composer: {
@@ -350,14 +351,22 @@
 
     questionRequested(q) {
       const s = store.state;
+      // 一个提问批次可能带好几个问题（DSH 的 ask_user_question 就是 questions[]），
+      // 每个问题自带一列选项；没有选项的问题就只剩「其它…」一个输入框
+      const questions =
+        Array.isArray(q.questions) && q.questions.length
+          ? q.questions
+          : [{ id: q.id, question: q.text || "", options: [] }];
+      const first = questions[0] || {};
       s.questions[q.id] = {
         id: q.id,
         kind: "question",
         sessionId: q.sessionId,
         risk: "read",
-        summary: q.text,
+        summary: first.question || q.text || "",
         command: "",
-        text: q.text,
+        text: first.question || q.text || "",
+        questions,
         status: "pending",
         waitingSince: Date.now(),
         expiresAt: Date.now() + 900000,
@@ -398,7 +407,7 @@
 
     approvalSubmitting(id) {
       const s = store.state;
-      const a = s.approvals[id];
+      const a = s.approvals[id] || s.questions[id];
       if (!a) return;
       a.status = "submitting";
       a.error = null;
@@ -407,7 +416,7 @@
 
     approvalFailed(id, message) {
       const s = store.state;
-      const a = s.approvals[id];
+      const a = s.approvals[id] || s.questions[id];
       if (!a) return;
       a.status = "failed";
       a.error = message || "没发出去，重试？";
