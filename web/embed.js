@@ -160,6 +160,8 @@
       this.timer = null;
       this.failures = 0;
       this.ticks = 0;
+      this.usage = null;
+      this.usageSig = "";
     }
 
     on(fn) {
@@ -223,6 +225,15 @@
           this.sessions = data.sessions || [];
           this.emit("sessions.changed", { sessions: this.sessions });
         }
+        // 用量同理：今天花了多少 / 余额缓存，数字没变就不惊动界面
+        if (data.usage) {
+          this.usage = data.usage;
+          const usig = JSON.stringify([data.usage.today, data.usage.tokens, data.usage.balance, data.usage.balance_error || ""]);
+          if (usig !== this.usageSig) {
+            this.usageSig = usig;
+            this.emit("usage.changed", { usage: data.usage });
+          }
+        }
       } catch (err) {
         this.failures += 1;
         if (this.failures >= 3 && this.connection !== "offline") {
@@ -239,6 +250,7 @@
         connection: this.connection,
         sessions: this.sessions,
         pending: this.pending,
+        usage: this.usage,
       };
     }
 

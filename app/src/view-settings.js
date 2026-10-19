@@ -9,59 +9,215 @@
   const A = () => XJ.state.actions;
 
   /* ---------------- 关于 / 检查更新（接 git 仓库） ----------------
-     外壳（Qt）把 version/repo 推进 window.__XJ_SHELL__；浏览器里跑原型时用默认值。
-     检查更新打 GitHub 的 releases/latest：仓库没发过版时 API 返回 404，
-     单独提示「去仓库看动态」而不是报错。 */
+     外壳（Qt）把 version/repo/releases 推进 window.__XJ_SHELL__（见
+     standalone-py/ojingjing_py.py 的 push_shell_info），浏览器里跑原型时用下面的默认值。
+     检查更新打 GitHub 的 releases/latest：
+       · 200 → 和本地版本比 semver。原来是 latest !== VERSION 直接比字符串，
+               0.3.10 会被判成比 0.3.9 小，这种坑等发到两位数版本就要咬人。
+       · 404 → 这个仓库还没发过 release（tag 也还是空的），引导去 Releases / 提交历史。 */
   const SHELL = window.__XJ_SHELL__ || {};
   const REPO = SHELL.repo || "https://github.com/maomaojiejie-bit/dsh-plugin-ojingjing";
   const RELEASES = SHELL.releases || REPO + "/releases";
-  const VERSION = String(SHELL.version || "0.3.0").replace(/^v/, "");
+  const ISSUES = REPO + "/issues";
+  const COMMITS = REPO + "/commits/main";
+  /** 仓库地址 → API 地址：外壳换仓库时不用改代码 */
+  const API = REPO.replace(/^https?:\/\/github\.com\//i, "https://api.github.com/repos/").replace(/\/+$/, "");
+  /** 版本号来源优先级：外壳推的（源码运行读 package.json）→ 构建时注入的 → 兜底常量 */
+  const BUILD = window.__XJ_BUILD__ || {};
+  const VERSION = String(SHELL.version || BUILD.version || "0.4.0").replace(/^v/, "");
+  /** 自动检查的冷却时间：打开设置时距上次超过这么久就静默查一次 */
+  const CHECK_TTL = 6 * 3600 * 1000;
 
-  /** 打开外部链接：独立窗走外壳桥（系统浏览器），原型/浏览器直接 window.open */
-  function openExternal(url) {
-    if (XJ.embed && XJ.embed.enabled && XJ.embed.post) XJ.embed.post({ type: "open-url", url });
-    else window.open(url, "_blank", "noopener");
+  /** 把链接塞进剪贴板：浏览器打不开时，至少能手动粘一次 */
+  function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) {
+      /* 无剪贴板权限，往下走 execCommand */
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand && document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) {
+      return false;
+    }
   }
 
-  async function checkUpdate() {
-    XJ.ui.toast({ type: "info", title: "正在检查更新…", duration: 1500 });
+  /** 没打开时的兜底：弹完整链接 + 塞进剪贴板，绝不静默失败 */
+  function openFailed(url, why) {
+    const copied = copyText(url);
+    XJ.ui.toast({
+      type: "warn",
+      title: copied ? "链接已复制，浏览器没能打开" : "浏览器没能打开",
+      sub: (why ? why + " · " : "") + url,
+      duration: 12000,
+    });
+  }
+
+  /** 连点保护：同一链接 1.2s 内只发一次（点不出来时人会连点） */
+  const openRecent = new Map();
+
+  /** 打开外部链接：独立窗走外壳桥（系统浏览器），原型/浏览器直接 window.open。
+      外壳会回推结果（xj-open-result）；4s 没动静就当没打开，弹提示 + 复制链接。
+      浏览器拦截弹窗（window.open 返回 null）时同样走兜底——总比点了没反应强。 */
+  function openExternal(url) {
+    const now = Date.now();
+    if (now - (openRecent.get(url) || 0) < 1200) return;
+    openRecent.set(url, now);
+
+    if (XJ.embed && XJ.embed.enabled && XJ.embed.post) {
+      let settled = false;
+      let tid = 0;
+      const done = (ok, why) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(tid);
+        window.removeEventListener("xj-open-result", onResult);
+        if (!ok) openFailed(url, why);
+      };
+      const onResult = (e) => {
+        const d = (e && e.detail) || {};
+        if (d.url && d.url !== url) return; // 不是这条链接点的，别管
+        if (!d.final) {
+          // 外壳说「已经在开了」：先收掉等待兜底，但别摘监听——真失败时它还会推终局结果
+          clearTimeout(tid);
+          tid = 0;
+          return;
+        }
+        done(!!d.ok, d.err || d.how || "");
+      };
+      window.addEventListener("xj-open-result", onResult);
+      tid = setTimeout(() => done(false, "外壳没有回应"), 6000);
+      XJ.embed.post({ type: "open-url", url });
+      return;
+    }
+    const win = window.open(url, "_blank", "noopener");
+    if (!win) openFailed(url, "浏览器拦了弹窗");
+  }
+
+  /** semver 比较：-1 / 0 / 1。数字段按数值比，预发布后缀（-rc.1、-beta）小于同段正式版。 */
+  function cmpVer(a, b) {
+    const norm = (v) =>
+      String(v || "")
+        .replace(/^v/i, "")
+        .split("+")[0]
+        .split("-");
+    const [ca, ...ra] = norm(a);
+    const [cb, ...rb] = norm(b);
+    const pa = ca.split(".");
+    const pb = cb.split(".");
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      // 缺的段当 0：「0.3」和「0.3.0」是同版本，不能因为少一段就判小
+      const na = i < pa.length ? parseInt(pa[i], 10) : 0;
+      const nb = i < pb.length ? parseInt(pb[i], 10) : 0;
+      if (Number.isNaN(na) && Number.isNaN(nb)) continue;
+      if (Number.isNaN(na)) return -1;
+      if (Number.isNaN(nb)) return 1;
+      if (na !== nb) return na < nb ? -1 : 1;
+    }
+    // 主版本一样，比预发布后缀：有后缀的更小
+    if (ra.length && !rb.length) return -1;
+    if (!ra.length && rb.length) return 1;
+    const sa = ra.join("-");
+    const sb = rb.join("-");
+    if (sa === sb) return 0;
+    return sa < sb ? -1 : 1;
+  }
+
+  /** 「3 分钟前」这种粗粒度时间，别把 fmtDuration 的 03h05m 塞给用户 */
+  function ago(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return "刚刚";
+    const m = Math.round(s / 60);
+    if (m < 60) return m + " 分钟前";
+    const hh = Math.round(m / 60);
+    if (hh < 48) return hh + " 小时前";
+    return Math.round(hh / 24) + " 天前";
+  }
+
+  /** 问 GitHub 要最新 release。没有 release 时返 { none: true } 而不是抛错。 */
+  async function fetchLatest() {
+    const res = await fetch(API + "/releases/latest", {
+      headers: { accept: "application/vnd.github+json" },
+      cache: "no-store",
+    });
+    if (res.status === 404) return { none: true, tag: "" };
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const d = await res.json();
+    return {
+      none: false,
+      tag: String(d.tag_name || d.name || "").replace(/^v/i, ""),
+      url: d.html_url || RELEASES,
+      at: d.published_at || "",
+    };
+  }
+
+  let checking = false;
+  /** 失败后的重试冷却：offline 时不至于每渲染一次就打一次 GitHub */
+  let retryAt = 0;
+
+  async function checkUpdate(opts) {
+    const silent = !!(opts && opts.silent);
+    if (checking) return;
+    checking = true;
+    if (!silent) XJ.ui.toast({ type: "info", title: "正在检查更新…", duration: 1500 });
     try {
-      const res = await fetch("https://api.github.com/repos/maomaojiejie-bit/dsh-plugin-ojingjing/releases/latest", {
-        headers: { accept: "application/vnd.github+json" },
-      });
-      if (res.status === 404) {
-        XJ.ui.toast({
-          type: "info",
-          title: "仓库还没有发布版本",
-          sub: "最新动态在 GitHub 上",
-          actions: [{ label: "打开仓库", onClick: () => openExternal(REPO) }],
-          duration: 9000,
-        });
+      const r = await fetchLatest();
+      A().patchSettings({ lastUpdateAt: Date.now(), latestVersion: r.tag || "" });
+      if (r.none) {
+        if (!silent) {
+          XJ.ui.toast({
+            type: "info",
+            title: "仓库还没发布版本",
+            sub: "等第一个 Release 出来，这里会自己亮起来",
+            actions: [{ label: "看提交历史", onClick: () => openExternal(COMMITS) }],
+            duration: 9000,
+          });
+        }
         return;
       }
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      const latest = String(data.tag_name || "").replace(/^v/, "");
-      if (latest && latest !== VERSION) {
+      if (r.tag && cmpVer(r.tag, VERSION) > 0) {
         XJ.ui.toast({
           type: "success",
-          title: "发现新版本 v" + latest,
-          sub: "当前 v" + VERSION + " · 去 Release 页下载",
-          actions: [{ label: "去下载", onClick: () => openExternal(data.html_url || RELEASES) }],
-          duration: 14000,
+          title: (silent ? "有新版本 " : "发现新版本 ") + "v" + r.tag,
+          sub: "当前 v" + VERSION + " · 去 Releases 看更新说明",
+          actions: [{ label: "去看看", onClick: () => openExternal(r.url) }],
+          duration: silent ? 11000 : 14000,
         });
-      } else {
+      } else if (!silent) {
         XJ.ui.toast({ type: "success", title: "已是最新版本", sub: "哦鲸鲸 v" + VERSION });
       }
     } catch (err) {
-      XJ.ui.toast({
-        type: "warn",
-        title: "检查失败",
-        sub: "网络或 GitHub 抽风了",
-        actions: [{ label: "打开仓库", onClick: () => openExternal(REPO) }],
-        duration: 9000,
-      });
+      retryAt = Date.now() + 60 * 1000;
+      if (!silent) {
+        XJ.ui.toast({
+          type: "warn",
+          title: "检查失败",
+          sub: "网络或 GitHub 抽风了",
+          actions: [{ label: "打开仓库", onClick: () => openExternal(REPO) }],
+          duration: 9000,
+        });
+      }
+    } finally {
+      checking = false;
     }
+  }
+
+  /** 打开设置时顺手静默查一次（6 小时内查过就跳过） */
+  function maybeAutoCheck(st) {
+    if (checking) return;
+    if (Date.now() < retryAt) return;
+    if (Date.now() - Number(st.lastUpdateAt || 0) < CHECK_TTL) return;
+    setTimeout(() => checkUpdate({ silent: true }), 320);
   }
 
   /* ---------------- 通用小组件 ---------------- */
@@ -141,6 +297,7 @@
   function settingsSheet(s) {
     const st = s.settings;
     const body = h("div", { class: "sheet-body" });
+    maybeAutoCheck(st);
 
     body.append(
       group(
@@ -198,6 +355,29 @@
         ),
         row("免打扰期间审批仍响铃", "默认关：免打扰就是免打扰", toggle("dndRingApproval")),
         row("完成通知", "会话跑完时发一条系统通知", toggle("notifyComplete")),
+        row(
+          "闲着主动说句话",
+          "长时间没碰我，我会浮上来冒个泡；没人理就自己沉下去",
+          h(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: "6px" } },
+            h(
+              "select",
+              {
+                class: "select-mini",
+                onchange: (e) => A().patchSettings({ idleNudgeMin: Number(e.target.value) }),
+              },
+              ...[2, 5, 6, 10, 15, 30].map((m) =>
+                h(
+                  "option",
+                  { value: m, selected: Number(st.idleNudgeMin) === m ? true : null },
+                  m + " 分钟"
+                )
+              )
+            ),
+            toggle("idleNudge")
+          )
+        ),
         row("完成提示音", "", toggle("soundComplete")),
         row("需要确认提示音", "这一项是唯一的强提醒，建议开", toggle("soundApproval"))
       )
@@ -366,11 +546,29 @@
       )
     );
 
+    const latest = String(st.latestVersion || "");
+    const newer = !!latest && cmpVer(latest, VERSION) > 0;
+    const updateSub = newer
+      ? "有新版本 v" + latest + " · 当前 v" + VERSION
+      : st.lastUpdateAt
+        ? "当前 v" + VERSION + " · " + ago(Date.now() - Number(st.lastUpdateAt)) + "查过"
+        : "当前 v" + VERSION + " · 连 GitHub Releases 比一比";
+
     body.append(
       group(
         "其它",
-        row("反馈问题", "带上脱敏日志，不包含任何对话内容", btn("打开反馈", () => XJ.app.openMainWindow())),
-        row("检查更新", "当前 v" + VERSION + " · 连 GitHub 仓库比一比", btn("检查", checkUpdate)),
+        row(
+          "反馈问题",
+          "去 GitHub Issues 提问题 · 别贴对话内容和密钥",
+          btn("打开 Issues", () => openExternal(ISSUES))
+        ),
+        row(
+          "检查更新",
+          updateSub,
+          newer ? btn("去更新", () => openExternal(RELEASES)) : btn("检查", () => checkUpdate()),
+          newer ? { warn: true } : null
+        ),
+        row("更新日志", "每个版本改了什么，都记在 Releases 里", btn("查看", () => openExternal(RELEASES))),
         row(
           "关于",
           "哦鲸鲸 v" + VERSION + " · DeepSeek Harness 悬浮窗 · 只看状态，不看聊天内容",

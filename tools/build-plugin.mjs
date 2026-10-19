@@ -4,12 +4,13 @@
  * 输入：../app/index.html、../app/src/**（原型本体，唯一源）
  * 输出：../web/app.html、../web/static/src/**（插件包根目录即仓库根）
  *
- * 做四件事：
+ * 做五件事：
  *   1. 相对路径换成 /xj/static/...，挂上 embed.css / embed.js；
  *   2. embed 剥离：原型专用文件（mock.js / devbar.js）不进插件包
  *      （app.js 里 devbar 调用点有 XJ.embed 守卫；XJ.mock 命名空间由 embed.js 兜底）；
  *   3. minify：JS/CSS 过 esbuild（可选依赖，找不到 / XJ_NO_MINIFY=1 就原样拷贝）；
- *   4. 演示桌面元素标记 data-remove-in-embed。
+ *   4. 演示桌面元素标记 data-remove-in-embed；
+ *   5. 把 package.json 的 version 注入成 window.__XJ_BUILD__（设置里检查更新要用）。
  *
  * 原型本身零改动，`file://` 打开仍然可用（原型永远用 app/src 的未压缩原件）。
  *
@@ -121,6 +122,14 @@ html = html.replace(/<title>[^<]*<\/title>/, "<title>哦鲸鲸 · 悬浮窗</tit
 html = html.replace(
   '<div class="desktop-hint">',
   '<div class="desktop-hint" data-remove-in-embed="1">'
+);
+/* 版本号打进去：设置里的「检查更新」拿它跟 GitHub 的 release 比。
+   页面自己也有一份兜底（0.4.0），但那份写在代码里，bump 版本时准忘——
+   这里每次构建都从 package.json 现读，页面永远说真话。 */
+const PKG_VERSION = String(JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version || "");
+html = html.replace(
+  '<script src="/xj/embed.js"></script>',
+  `<script>window.__XJ_BUILD__ = ${JSON.stringify({ version: PKG_VERSION, built_at: new Date().toISOString() })};</script>\n    <script src="/xj/embed.js"></script>`
 );
 
 fs.writeFileSync(path.join(WEB, "app.html"), html, "utf8");

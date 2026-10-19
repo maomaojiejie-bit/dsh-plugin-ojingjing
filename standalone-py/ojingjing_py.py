@@ -82,6 +82,15 @@ try:
     _migrate_legacy_dir(CONFIG_DIR)
 except Exception:  # noqa: BLE001
     pass
+
+# 外壳是不是跑在受限的文件沙箱里（DSH 自动拉起时就是这样：%APPDATA%\ojingjing 写不进去，
+# `_writable_dir` 只好退到程序目录下的 data/）。这件事直接影响两件事：
+#   1) 浏览器不能用自己的默认配置 —— 它写不进 %LOCALAPPDATA%\Microsoft\Edge\User Data，
+#      会以 21（profile in use）退出，表现是「点了链接什么也没发生」；
+#   2) 设置/窗口位置也存不下来（同样写不进去），只能存进程内的那份。
+_SANDBOXED = str(CONFIG_DIR) != str(
+    Path(os.environ.get("APPDATA", "\\nonexistent")) / "ojingjing"
+)
 POS_PATH = CONFIG_DIR / "window.json"
 PID_PATH = CONFIG_DIR / "ojingjing.pid"
 ICON_CANDIDATES = [BASE.parent / "web" / "icon.png"]  # 只保留角色图标；自定义头像见 custom_icon_path()
@@ -232,6 +241,174 @@ def log(message: str) -> None:
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+# 默认浏览器 ProgId → 可执行文件候选路径（按优先级）。
+# 只认 Edge / Chrome：它们的 --new-window 语义一致，都能强制新窗口激活到前台
+# （os.startfile 对已在跑的浏览器只是塞后台标签页，用户看不到 = 「点了没反应」）。
+_BROWSER_CANDIDATES: dict[str, list[Path]] = {
+    "MSEdgeHTM": [
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+    ],
+    "ChromeHTML": [
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "Google" / "Chrome" / "Application" / "chrome.exe",
+    ],
+}
+
+
+def _default_browser_exe() -> str | None:
+    """读系统默认浏览器（https 关联的 UserChoice），返回 Edge/Chrome 的可执行路径。
+    不是这两家、或读不到注册表、或文件不在位 → None（调用方走 os.startfile 回退）。"""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\Shell\Associations"
+            r"\UrlAssociations\https\UserChoice",
+        ) as key:
+            progid = str(winreg.QueryValueEx(key, "ProgId")[0])
+    except Exception:
+        return None
+    for pid, candidates in _BROWSER_CANDIDATES.items():
+        # ProgId 有时带随机后缀（如 MSEdgeHTM.qtqsg4nk4yryeb5agxlh0lhwz4），前缀匹配
+        if progid == pid or progid.startswith(pid + "."):
+            for cand in candidates:
+                try:
+                    if cand.is_file():
+                        return str(cand)
+                except OSError:
+                    continue
+    return None
+
+# ---- 打开外部链接：判断「窗口到底出没出来」的几把尺子 ----
+# 2026-10-19 的教训：用户连点 8 次「反馈问题」，8 次 subprocess.Popen 全部成功、
+# 日志全是 (new-window msedge.exe)，但屏幕上连一个 Edge 窗口都没有。
+# 只看 Popen 返回值会骗人，必须回头数一眼窗口。
+_BROWSER_IMAGE_NAMES = {
+    "msedge.exe", "chrome.exe", "brave.exe", "firefox.exe", "opera.exe", "vivaldi.exe",
+}
+_OPEN_LOCK = threading.Lock()
+_OPEN_RECENT: dict[str, float] = {}
+_OPEN_REPEAT_WINDOW = 1.2  # 秒：同一链接这么短时间内重复点击只处理一次
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _pid_image_name(pid: int) -> str:
+    """进程映像名（小写）；拿不到（系统进程 / 权限不足）→ 空串。"""
+    h = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wt.DWORD(len(buf))
+        if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return os.path.basename(buf.value).lower()
+        return ""
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def _browser_windows() -> set[int]:
+    """所有可见的、属于主流浏览器的顶层窗口句柄。"""
+    found: set[int] = set()
+    names: dict[int, str] = {}
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def _cb(hwnd, _lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = wt.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            p = int(pid.value)
+            if p not in names:
+                names[p] = _pid_image_name(p)
+            if names[p] in _BROWSER_IMAGE_NAMES:
+                found.add(int(hwnd))
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(_cb, 0)
+    except Exception:  # noqa: BLE001
+        pass
+    return found
+
+
+def _wait_new_browser_window(before: set[int], timeout: float) -> bool:
+    """等一个「之前没有」的浏览器窗口；超时 False。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _browser_windows() - before:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _wait_window_or_exit(before: set[int], timeout: float, proc) -> tuple[bool, int | None]:
+    """等新窗口，但进程先退出就立刻收手——别为一个已经死掉的进程傻等满 timeout。
+
+    返回 (窗口出没出来, 进程退出码或 None)。默认配置被别的 Edge 进程占用时，
+    msedge.exe 会在 ~300ms 内以 code=21 退出，这条捷径让备用方案马上接上。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _browser_windows() - before:
+            return True, None
+        rc = proc.poll()
+        if rc is not None:
+            time.sleep(0.4)  # 窗口可能由刚退出的一次性中继进程创建，宽限一下
+            return bool(_browser_windows() - before), rc
+        time.sleep(0.1)
+    return False, proc.poll()
+
+
+# 默认配置被占用（msedge 退出码 21 = profile in use）时，这段时间内不再先试默认配置，
+# 直接走备用配置，省掉每次点击那几百毫秒的失败等待。10 分钟后自动重试（用户可能关掉了 Edge）。
+_DEFAULT_PROFILE_BROKEN_UNTIL = 0.0
+_SANDBOX_NOTICE_LOGGED = False
+
+
+def _alt_profile_dir(slot: int = 1) -> str | None:
+    """组件自带的浏览器配置目录：默认配置用不了时的备用路。
+
+    为什么需要它（2026-10-19 实测）：哦鲸鲸的外壳是被 DSH 以「被限制的文件沙箱」拉起来的
+    （`_writable_dir` 的注释里也写了这层，所以配置目录会退到程序目录下的 data/）。
+    从这种进程里 CreateProcess 起 msedge.exe，浏览器同样继承限制，写不进
+    %LOCALAPPDATA%\\Microsoft\\Edge\\User Data，于是自己以 21（profile in use）退出 ——
+    表现就是「点了链接什么也没发生」。
+    换一个能写的独立 --user-data-dir，窗口就正常出来了；代价是这个配置里没有用户登录态
+    （GitHub 公开页面照样能看）。候选顺序：程序配置目录 → 临时目录。
+
+    slot>1 是「第二个实例」用的：浏览器已经在跑时，同配置的 --new-window 要靠进程间管道
+    把请求递过去，沙箱下这条管道时好时坏（实测同一个目录连点两次，有时窗口就是不出来）。
+    换一个独立配置目录 = 直接起一个新实例，窗口一定出得来。
+    """
+    name = "browser-profile" if slot <= 1 else f"browser-profile-{slot}"
+    candidates = [Path(CONFIG_DIR) / name]
+    tmp = os.environ.get("TEMP") or os.environ.get("TMP")
+    if tmp:
+        candidates.append(Path(tmp) / ("ojingjing-" + name))
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            probe = d / ".probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return str(d)
+        except Exception:  # noqa: BLE001
+            continue
+    log("没有可写的备用浏览器配置目录")
+    return None
 
 WM_NCLBUTTONDOWN = 0xA1
 HTCAPTION = 0x2
@@ -945,17 +1122,181 @@ def main() -> None:
 
         @Slot(str)
         def open_url(self, url: str) -> None:
-            """打开外部链接（设置页「关于 / 检查更新」用）。
-            只放行 https：别的 scheme（file://、javascript: 之类）一律不接。"""
-            try:
-                u = str(url or "").strip()
-                if not u.startswith("https://"):
-                    log(f"open-url: 拒绝非 https 链接 {u!r}")
+            """打开外部链接（设置页「关于 / 检查更新 / 反馈问题」用）。
+
+            只放行 https：别的 scheme（file://、javascript: 之类）一律不接。
+
+            三道保险，因为「点了没反应」是这个功能最坑的失败形态：
+              1. 连点去重：同一链接 1.2s 内只开一次（点不出来时人会连点，别真开 8 个进程）；
+              2. 开完窗口要回头数窗口：Popen 成功 ≠ 窗口出现，见 _wait_new_browser_window；
+              3. 结果回推页面：页面 4s 收不到结果就弹提示并复制链接，绝不静默失败。
+            开浏览器要等窗口，会阻塞 GUI，所以整个流程丢后台线程，槽立刻返回。
+            """
+            u = str(url or "").strip()
+            if not u.startswith("https://"):
+                log(f"open-url: 拒绝非 https 链接 {u!r}")
+                self._push_open_result({"url": u, "ok": False, "how": "rejected", "final": True, "err": "只接受 https 链接"})
+                return
+            now = time.monotonic()
+            with _OPEN_LOCK:
+                if now - _OPEN_RECENT.get(u, 0.0) < _OPEN_REPEAT_WINDOW:
+                    log(f"open-url: {_OPEN_REPEAT_WINDOW}s 内重复点击，忽略 {u}")
+                    # 第一次那下正在开，回个「算成功」，页面别弹失败提示
+                    self._push_open_result({"url": u, "ok": True, "how": "deduped", "final": False, "err": ""})
                     return
-                QDesktopServices.openUrl(QUrl(u))
-                log(f"open-url: {u}")
+                _OPEN_RECENT[u] = now
+                if len(_OPEN_RECENT) > 64:  # 别让字典长胖：清掉一分钟前的记录
+                    for k, t in list(_OPEN_RECENT.items()):
+                        if now - t > 60:
+                            _OPEN_RECENT.pop(k, None)
+            threading.Thread(target=self._open_url_worker, args=(u,), daemon=True).start()
+
+        @Slot(str)
+        def pushOpenResult(self, js: str) -> None:
+            """GUI 线程上执行：runJavaScript 只能在主线程调。"""
+            try:
+                self.overlay.view.page().runJavaScript(js)
+            except Exception as exc:  # noqa: BLE001
+                log(f"回推打开结果失败：{exc}")
+
+        def _push_open_result(self, info: dict) -> None:
+            """把打开结果推回页面：页面据此决定要不要弹「没打开」的提示。"""
+            from PySide6.QtCore import QMetaObject, Q_ARG, Qt as _Qt
+
+            payload = json.dumps(info, ensure_ascii=False)
+            js = (
+                "window.__XJ_OPEN_RESULT__=" + payload + ";"
+                "window.dispatchEvent(new CustomEvent('xj-open-result',{detail:window.__XJ_OPEN_RESULT__}));"
+            )
+            try:
+                if threading.current_thread() is threading.main_thread():
+                    self.pushOpenResult(js)
+                else:
+                    QMetaObject.invokeMethod(self, "pushOpenResult", _Qt.QueuedConnection, Q_ARG(str, js))
+            except Exception as exc:  # noqa: BLE001
+                log(f"推打开结果失败：{exc}")
+
+        def _open_url_worker(self, u: str) -> None:
+            """线程入口：漏网异常别把线程带走，转成一次「没打开」的回推。"""
+            try:
+                self._open_url_steps(u)
             except Exception as exc:  # noqa: BLE001
                 log(f"打开链接失败：{exc}")
+                self._push_open_result(
+                    {"url": u, "ok": False, "how": "error", "final": True, "err": str(exc)}
+                )
+
+        def _open_url_steps(self, u: str) -> None:
+            global _DEFAULT_PROFILE_BROKEN_UNTIL, _SANDBOX_NOTICE_LOGGED
+            errs: list[str] = []
+            # 先回一句「已经在开了」：页面据此收掉等待兜底，真失败时再推一次终局结果
+            self._push_open_result({"url": u, "ok": True, "how": "pending", "final": False, "err": ""})
+
+            def done(how: str) -> None:
+                log(f"open-url: {u} ({how})")
+                self._push_open_result({"url": u, "ok": True, "how": how, "final": True, "err": ""})
+
+            exe: str | None = None
+            try:
+                exe = _default_browser_exe()
+            except Exception as exc:  # noqa: BLE001
+                errs.append(f"探默认浏览器: {exc}")
+            if _SANDBOXED:
+                if not _SANDBOX_NOTICE_LOGGED:
+                    _SANDBOX_NOTICE_LOGGED = True
+                    log("open-url: 外壳跑在文件沙箱里，浏览器用不了默认配置（写不进去），改走自带配置")
+
+            # 1) 默认浏览器是 Edge/Chrome：--new-window 保证新窗口激活到前台
+            #    （os.startfile 对已在跑的浏览器只是塞后台标签页，用户看不见 = 「点了没反应」），
+            #    但这次要验证「窗口真的出来了」才敢说成功。
+            if exe and not _SANDBOXED and time.monotonic() >= _DEFAULT_PROFILE_BROKEN_UNTIL:
+                try:
+                    before = _browser_windows()
+                    proc = subprocess.Popen([exe, "--new-window", u], close_fds=True)
+                    ok, rc = _wait_window_or_exit(before, 2.5, proc)
+                    if ok:
+                        done(f"new-window {Path(exe).name}")
+                        return
+                    if rc == 21:
+                        # 21 = profile in use：浏览器在，但那个配置被另一个进程锁着，新窗口开不出来
+                        _DEFAULT_PROFILE_BROKEN_UNTIL = time.monotonic() + 600
+                        errs.append("默认配置被别的 Edge 进程占用（code=21）")
+                        log("open-url: 浏览器默认配置被占用（code=21），改用组件自带的独立配置")
+                    else:
+                        tail = f"进程退出 code={rc}" if rc is not None else "进程还在但没窗口"
+                        errs.append(f"new-window 起了进程 {proc.pid}，没等到新窗口（{tail}）")
+                        log("open-url: " + errs[-1])
+                except Exception as exc:  # noqa: BLE001
+                    errs.append(f"new-window: {exc}")
+
+            # 2) 备用配置：默认配置被占用时唯一的活路。
+            #    独立 --user-data-dir 不受那把锁影响，窗口一定出得来（首次会稍慢，之后复用同一实例）。
+            #    但「浏览器刚起来、还在初始化」时紧接着的第二次点击会被它吞掉
+            #    （实测：首点后 3s 内再点，窗口反而全没了），所以失败后隔一会儿补一次；
+            #    补的那次换一个独立配置目录（= 新实例），不再依赖那条时好时坏的进程间管道。
+            for attempt in range(2):
+                if not exe:
+                    break
+                if attempt:
+                    time.sleep(1.2)
+                try:
+                    alt = _alt_profile_dir(attempt + 1)
+                    if not alt:
+                        errs.append("没有可写的备用配置目录")
+                        break
+                    before = _browser_windows()
+                    proc = subprocess.Popen(
+                        [exe, f"--user-data-dir={alt}", "--no-first-run", "--new-window", u],
+                        close_fds=True,
+                    )
+                    ok, rc = _wait_window_or_exit(before, 4.0, proc)
+                    if ok:
+                        done("alt-profile" if attempt == 0 else "alt-profile-retry")
+                        return
+                    tail = f"进程退出 code={rc}" if rc is not None else "进程还在但没窗口"
+                    errs.append(f"备用配置第 {attempt + 1} 次没开出窗口（{tail}）")
+                    log("open-url: " + errs[-1])
+                except Exception as exc:  # noqa: BLE001
+                    errs.append(f"alt-profile: {exc}")
+            # 3) os.startfile：交给 shell 的默认浏览器（同样要数窗口，不然会谎报成功）
+            try:
+                before = _browser_windows()
+                os.startfile(u)  # noqa: S606
+                if _wait_new_browser_window(before, 2.5):
+                    done("startfile")
+                    return
+                errs.append("startfile 没报错但没见到新窗口")
+            except Exception as exc:  # noqa: BLE001
+                errs.append(f"startfile: {exc}")
+            # 4) ShellExecuteW：手工 Win32，拿得到错误码
+            try:
+                shell32 = ctypes.windll.shell32
+                shell32.ShellExecuteW.argtypes = [
+                    wt.HWND,
+                    wt.LPCWSTR,
+                    wt.LPCWSTR,
+                    wt.LPCWSTR,
+                    wt.LPCWSTR,
+                    ctypes.c_int,
+                ]
+                shell32.ShellExecuteW.restype = wt.HINSTANCE
+                rc = shell32.ShellExecuteW(None, "open", u, None, None, 5)  # SW_SHOW
+                if int(rc) > 32:
+                    done("ShellExecuteW")
+                    return
+                errs.append(f"ShellExecuteW rc={int(rc)}")
+            except Exception as exc:  # noqa: BLE001
+                errs.append(f"ShellExecuteW: {exc}")
+            # 5) QDesktopServices 保底（Qt 官方通道，失败时返回 False）
+            try:
+                if QDesktopServices.openUrl(QUrl(u)):
+                    done("QDesktopServices")
+                    return
+                errs.append("QDesktopServices 返回 False")
+            except Exception as exc:  # noqa: BLE001
+                errs.append(f"QDesktopServices: {exc}")
+            log(f"open-url 失败：{u} | " + " | ".join(errs))
+            self._push_open_result({"url": u, "ok": False, "how": "failed", "final": True, "err": "；".join(errs)})
 
         @Slot()
         def capture(self) -> None:

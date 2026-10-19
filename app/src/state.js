@@ -41,6 +41,9 @@
       telemetry: true,
       confirmDrop: true,
       reduceAnim: false,
+      // 闲下来主动搭话：闲置多久说一句（分钟）；连着没人理会自动拉长间隔
+      idleNudge: true,
+      idleNudgeMin: 6,
     };
   }
 
@@ -49,6 +52,19 @@
     return {
       connection: "online", // online | reconnecting | offline
       lastSyncAt: Date.now(),
+      /* 用量与余额：由插件的 /xj/state 下发（lib/usage.js 算的），这里只做搬运与展示。
+         sessions 是「每个会话今天花了多少」，键是 sessionId。 */
+      usage: {
+        day: "",
+        today: 0,
+        tokens: 0,
+        sessions: {},
+        balance: null,
+        currency: "CNY",
+        balanceAt: 0,
+        error: "",
+        loading: false,
+      },
       sessions: [],
       approvals: {}, // id -> approval
       questions: {}, // id -> question
@@ -521,6 +537,42 @@
 
     composerAttachments(fn) {
       fn(store.state.composer);
+      store.emit();
+    },
+
+    /** 用量快照落地（/xj/state 的 usage 字段，或刷新余额后单独拉回来的） */
+    setUsage(u) {
+      const s = store.state;
+      if (!u) return;
+      const prev = s.usage;
+      const next = {
+        day: u.day || prev.day,
+        today: Number(u.today) || 0,
+        tokens: Number(u.tokens) || 0,
+        sessions: u.sessions && typeof u.sessions === "object" ? u.sessions : prev.sessions,
+        balance: u.balance == null ? (u.balance === null ? null : prev.balance) : Number(u.balance),
+        currency: u.currency || prev.currency,
+        balanceAt: Number(u.balance_at || u.balanceAt) || prev.balanceAt,
+        error: u.balance_error != null ? String(u.balance_error || "") : u.error != null ? String(u.error) : prev.error,
+        loading: u.loading == null ? prev.loading : !!u.loading,
+      };
+      // 数字没变就别 emit：面板每 15 秒拉一次快照，白重渲染一次就是白抖一次
+      const same =
+        next.day === prev.day &&
+        next.today === prev.today &&
+        next.tokens === prev.tokens &&
+        next.balance === prev.balance &&
+        next.balanceAt === prev.balanceAt &&
+        next.error === prev.error &&
+        next.loading === prev.loading &&
+        JSON.stringify(next.sessions) === JSON.stringify(prev.sessions);
+      if (same) return;
+      s.usage = next;
+      store.emit();
+    },
+
+    usageLoading(on) {
+      store.state.usage.loading = !!on;
       store.emit();
     },
   };

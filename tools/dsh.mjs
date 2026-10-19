@@ -4,7 +4,7 @@
  * 为什么不能直接 spawn dsh.cmd：DSH Desktop 生成的 shim 是个批处理，里面先 `chcp 65001`
  * 再把参数用 `%*` 展开交给 Electron。这条链上只要有一步按 ANSI/OEM 代码页转码，
  * 含中文的参数就会变成乱码——实测把
- *   C:\Users\xxx\Desktop\新建文件夹\ojingjing-widget\dist\dsh-plugin-ojingjing-0.3.0.tgz
+ *   C:\Users\xxx\Desktop\新建文件夹\ojingjing-widget\dist\dsh-plugin-ojingjing-0.4.0.tgz
  * 传给 pnpm 时变成 UTF-8-当-GBK 读的乱码，结尾那个反斜杠还会被吞进双字节字符里
  * （`...文件夹\ojingjing...` → `...澶筡ojingjing...`），pnpm 直接 exit 1。
  *

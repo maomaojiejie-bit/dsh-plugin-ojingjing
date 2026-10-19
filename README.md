@@ -4,6 +4,10 @@
 
 **只读任务状态，不读对话正文。**
 
+> 最新版本、更新说明与 `dsh-plugin-ojingjing-<版本>.tgz` 附件都在
+> [Releases](https://github.com/maomaojiejie-bit/dsh-plugin-ojingjing/releases)；
+> 面板设置里的「检查更新」比的就是那里的 tag。装法见下文[安装](#安装)，发版流程见[发版](#发版推-github--release)。
+
 > **仓库根目录本身就是一个 DSH bundle 插件包**（`package.json` + `cordis.patch.yml` + `lib/` + `web/`）。
 > `app/`（可点击原型）、`standalone-py/`（独立桌面窗）、`tools/`（构建与校验）是随仓库带的配套内容，
 > 不在 npm 包的 `files` 白名单里。装上插件后，浮窗用同一份前端源码，一条 `/xj/*` 接口喂真数据。
@@ -56,7 +60,7 @@ node tools/install.mjs --relaunch   # 装完自动把 DSH 拉起来
 | --- | --- |
 | 1 | 环境自检：Node 版本、npm、`dsh`、desktop profile 是否存在 |
 | 2 | 构建前端：`app/src` → `web/`（见[构建链路](#构建链路)） |
-| 3 | 打包：`npm pack` → `dist/dsh-plugin-ojingjing-0.3.0.tgz`（缓存写在仓库的 `.npm-cache/`） |
+| 3 | 打包：`npm pack` → `dist/dsh-plugin-ojingjing-0.4.0.tgz`（缓存写在仓库的 `.npm-cache/`） |
 | 4 | **装进 DSH**：`dsh plugin add <tgz>`（走 DSH Desktop 自带的 dsh），补登记 `dsh.profile.bundles`，落地校验 |
 | 5 | 装 Python 依赖：没有 `standalone-py/.venv` 就建一个，再 `pip install -r requirements.txt`（PySide6，约 300MB，已装则跳过） |
 | 6 | 写自动拉起配置 `~/.dsh/ojingjing-shell.json`（DSH 起来时自动弹独立窗） |
@@ -106,7 +110,7 @@ node tools/uninstall.mjs --purge    # 连 .venv / data（含 API key）/ 日志 
 
 shim 是个批处理：里面先 `chcp 65001`，再用 `%*` 把参数展开给 Electron。这条链上任何一步按
 ANSI/OEM 代码页转码，含中文的参数就会变成乱码 —— 实测把
-`C:\...\Desktop\新建文件夹\ojingjing-widget\dist\dsh-plugin-ojingjing-0.3.0.tgz` 交给 pnpm 时，
+`C:\...\Desktop\新建文件夹\ojingjing-widget\dist\dsh-plugin-ojingjing-0.4.0.tgz` 交给 pnpm 时，
 它变成 UTF-8-当-GBK 读的样子（`新建文件夹` → `鏂板缓鏂囦欢澶`），连结尾那个反斜杠都被双字节字符吞掉，
 pnpm 只能 exit 1，日志里还只留一句 `Command failed with exit code 1: pnpm add "…乱码…"`。
 
@@ -165,6 +169,7 @@ ojingjing-widget/
 ├── package.json  cordis.patch.yml  README.md  PLUGIN.md  LICENSE
 ├── 安装到DSH.cmd            双击安装（纯 ASCII：cmd 按 OEM 码页读批处理，中文会乱码）
 ├── 从DSH卸载.cmd            双击卸载
+├── 发布到GitHub.cmd          双击发版（= node tools/release.mjs：推代码 → 打 tag → 建 Release → 传 tarball）
 ├── Ojingjing.spec            PyInstaller 打包独立窗 exe（tools/build-exe.mjs 一条龙：构建+裁语言包+盘点）
 ├── OjingjingDebug.spec       同上，带控制台版
 ├── lib/index.js            ② 宿主插件（单文件）：apply(root) → session/event · approval/request · /xj/*
@@ -182,6 +187,7 @@ ojingjing-widget/
 │   ├── 停止哦鲸鲸.cmd           按命令行匹配结束进程（GBK 编码）
 │   └── requirements.txt        PySide6>=6.6
 ├── assets/icon-source.png  头像原图（tools/prep-avatar.py 的输入）
+├── releases/v0.4.0.md      GitHub Release 的发布说明（版本号与 tag 同名，tools/release.mjs 直接取这份）
 ├── .shots/                 自检截图：verify-avatar-app.png · verify-whale-svg.png
 ├── tools/                  构建 / 安装 / 打包 / 截图 / 校验（见[工具链](#工具链)）
 │   └── dev/                一次性探针（probe-*、cdp-eval、qt-interact、wheel-check…）
@@ -190,12 +196,13 @@ ojingjing-widget/
 
 ## 插件包结构
 
-发布到 npm 的只有 `package.json` 里 `files` 白名单列的东西（`npm pack` 实测 29 个文件，约 216 KB）：
+发布到 npm 的只有 `package.json` 里 `files` 白名单列的东西（`npm pack` 实测 30 个文件，tgz 约 224 KB）：
 
 ```
 package.json          # main → lib/index.js；dsh.bundle.patch → cordis.patch.yml；files 白名单
 cordis.patch.yml      # - insert: [{ id: dsh-plugin-ojingjing, name: dsh-plugin-ojingjing }]
 lib/index.js          # 宿主插件入口：export default { name, apply(root) }
+lib/usage.js          # 用量账本：token → 人民币（峰谷价目表）+ DeepSeek 余额（60s 缓存）
 web/app.html          # tools/build-plugin.mjs 从 app/index.html 生成（别手改）
 web/embed.js          # 页面侧：XJ.embed + 真数据 harness（/xj/state、/xj/decide、/xj/prompt）
 web/embed.css         # 嵌入态样式
@@ -215,7 +222,9 @@ README.md  LICENSE
 
 | 路由 | 作用 |
 |---|---|
-| `GET /xj/state` | 连接状态 + 会话列表 + 角标计数 + 待批准项（浮窗轮询的就是它） |
+| `GET /xj/state` | 连接状态 + 会话列表 + 角标计数 + 待批准项 + 用量（浮窗轮询的就是它） |
+| `GET /xj/usage` | 今日花费 / 分会话花费 / DeepSeek 余额（读缓存，不阻塞） |
+| `POST /xj/usage` | 强制刷一次余额（面板上那个小刷新按钮就是它） |
 | `POST /xj/decide` | 通过 / 拒绝某个审批（带幂等键，撞 409 表示已在别处处理） |
 | `POST /xj/prompt` | 截图提问：图片以 data URL 内联，投进指定会话的 `prompt()` |
 | `GET /xj/app.html` | 浮窗页面本体 |
@@ -233,9 +242,28 @@ README.md  LICENSE
       "action": "正在pwsh", "progress": 0.35, "unread": 0, "pending": [] }
   ],
   "counts": { "pending": 0, "unread": 0 },
-  "pending": []
+  "pending": [],
+  "usage": {
+    "day": "2026-10-19", "today": 0.084, "tokens": 18420,
+    "sessions": { "session-…": { "cost": 0.031, "tokens": 7100 } },
+    "balance": 11.42, "currency": "CNY", "balance_error": "",
+    "pricing": "valley"
+  }
 }
 ```
+
+### 用量从哪来（`lib/usage.js`）
+
+DSH 只报 token，不报钱，所以账本在插件里自己算：
+
+- **会话花费**：`session/event` 的 `assistant/message` 带真实 `usage`（`inputTokens` / `cacheReadTokens` / `outputTokens`），
+  按 `lib/usage.js` 的价目表换成人民币（Flash / Pro 两档，工作日 9–12、14–18 点按峰价，其余谷价）。
+  `outputTokens` 已含推理 token，不再重复加。
+- **余额**：`GET https://api.deepseek.com/user/balance`，密钥优先读环境变量 `DEEPSEEK_API_KEY`，
+  其次读 `~/.dsh/.credentials.yaml` 的 `refs` 段。60 秒缓存，`/xj/state` 每秒轮询也不会打爆接口。
+- **落盘**：`~/.dsh/ojingjing-usage.json` 只存「今天」的累计，跨天自动归零，DSH 重启不丢。
+- 拿不到密钥 / 网络不通时，面板显示「未获取」，把鼠标停上去能看到具体原因，不影响其它功能。
+
 
 自测：`node tools/check-plugin.mjs` 探测运行中的宿主；`node tools/test-host.mjs --serve`
 起一个 43999 端口上的假宿主，`$env:XJ_DSH_BASE="http://127.0.0.1:43999"` 把外壳指过去就能跑全链路。
@@ -251,6 +279,7 @@ README.md  LICENSE
 | [`tools/dsh.mjs`](tools/dsh.mjs) | 把 `dsh` shim 拆成「exe + desktop-cli.js + env」直接 spawn，绕开 cmd 代码页 |
 | [`tools/install-plugin.mjs`](tools/install-plugin.mjs) | 老直装脚本（不经过 dsh，直接拷 profile + 登记 bundles）；现在是 `install.mjs --direct` 的退路 |
 | [`tools/pack.mjs`](tools/pack.mjs) | 白名单打交付包 → `dist/pack/`，`--zip` 再压一个 `dist/ojingjing-widget-<日期>.zip` |
+| [`tools/release.mjs`](tools/release.mjs) | **发版**：推代码 → 打 tag → 建 GitHub Release → 传 tarball + `SHA256SUMS.txt`（`--dry-run` 演练） |
 | [`tools/test-host.mjs`](tools/test-host.mjs) | 假 Cordis 宿主跑整套 `/xj/*` 契约断言（16 项） |
 | [`tools/test-shell-launch.mjs`](tools/test-shell-launch.mjs) | 验证「DSH 起来 → 自动拉起独立窗」这条联动 |
 | [`tools/check-plugin.mjs`](tools/check-plugin.mjs) | 探测运行中的宿主：`/xj/inject.js`、`/xj/app.html`、`/xj/state` |
@@ -269,10 +298,26 @@ README.md  LICENSE
 | `fps-probe.mjs` / `scroll-probe.mjs` / `wheel-check.mjs` | 帧率、滚动容器、滚轮缓动的抽样验证 |
 | `rename-brand.mjs` | 批量改品牌名；**跑之前先 `git status` 确认干净**，不要对 `tools/` 自身跑 |
 
+## 发版（推 GitHub + Release）
+
+1. 改 `package.json` 的 `version`（**只改这一个地方**：页面的版本号由 `tools/build-plugin.mjs` 在构建时注入 `window.__XJ_BUILD__`，不再手抄）。
+2. 写 `releases/v<版本>.md`（Release 说明，没有就用 `git log` 兜底）。
+3. `node tools/build-plugin.mjs` → `npm.cmd pack --cache .npm-cache --pack-destination dist`。
+4. 双击 `发布到GitHub.cmd`（或 `node tools/release.mjs`）：推 `main` → 打 `v<版本>` tag → 建 Release → 传 `dsh-plugin-ojingjing-<版本>.tgz` + `SHA256SUMS.txt`。
+
+`--dry-run` 空跑看清步骤；`--draft` 发成草稿；`--skip-push` 只在 tag 已推过时补 Release。凭据优先读 `GITHUB_TOKEN`，
+否则走 git 凭据管理器里那份（和 `git push` 用的是同一份），脚本不会打印也不会落盘 token。
+设置面板里「检查更新」就是比这里的 Release tag——**发完版，用户的检查更新才会看到新版本**。
+
 ## 现状
 
 - 宿主插件已装进 desktop profile，`/xj/state` 返回真实会话；独立窗由 DSH 启动时拉起（或双击 `standalone-py/启动哦鲸鲸.cmd`）。
-- 已接真数据：四形态渲染、状态真值表、双角标、未读制、内嵌审批（通过 / 拒绝 / 幂等 / 409 竞态）、截图提问。
+- 已接真数据：四形态渲染、状态真值表、双角标、未读制、内嵌审批（通过 / 拒绝 / 幂等 / 409 竞态）、截图提问、用量与余额。
+- 面板里那条「今日 ¥ / 余额 ¥」来自插件账本（见上文「用量从哪来」），每个会话卡右侧还会标这个会话今天花了多少。
+- 闲置搭话：`settings.idleNudgeMin`（默认 6 分钟，`设置 → 提醒 → 闲着主动说句话` 可调）内没有鼠标/键盘动作，
+  鲸鱼会自己浮上来冒个泡；没人理就 14 秒后沉回去，连着被忽略会自己把间隔拉长到最多 45 分钟。
+- 设置面板「其它」分组接的是本仓库：反馈问题 / 更新日志 / 关于直接开对应页面，「检查更新」拿当前版本比 GitHub Release 的 tag。
+- 工作态提示是鲸鱼头顶三颗泡泡绕圈（外圈虚线反向慢转）；软件光栅模式下放慢到 2.4s/圈但不停，滚动时让出帧。
 - 还没接：会话卡「停止」、输入条发文字、拖文件进会话（按钮已隐藏，不会点了报错）、点击穿透。
 - DSH 插件宿主跑在 `utilityProcess` 里，拿不到 `BrowserWindow`，所以跨应用常驻必须靠 `standalone-py/` 这个独立程序。
 - 状态真值表（`app/src/state.js`）：**需要确认 > 工作中 > 完成未读 > 空闲 > 离线**；离线时整体灰度 + 光环转虚线。

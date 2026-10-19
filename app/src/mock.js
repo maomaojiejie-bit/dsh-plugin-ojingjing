@@ -151,6 +151,31 @@
             impact: a.impact,
             expires_at: new Date(a.expiresAt).toISOString(),
           })),
+        // 原型的用量：数字会随会话数慢慢涨，看起来像在记账（真实数据由插件 lib/usage.js 下发）
+        usage: this.usageSnapshot(),
+      };
+    }
+
+    usageSnapshot() {
+      if (!this._mockUsage) {
+        this._mockUsage = { today: 0.084, tokens: 18420, balance: 11.42, at: Date.now() };
+      }
+      const u = this._mockUsage;
+      const drift = this.sessions.filter((s) => s.state === "working").length;
+      if (drift) {
+        u.today = Math.round((u.today + 0.0021) * 10000) / 10000;
+        u.tokens += 420;
+        u.balance = Math.max(0, Math.round((u.balance - 0.0021) * 10000) / 10000);
+      }
+      return {
+        day: new Date().toISOString().slice(0, 10),
+        today: u.today,
+        tokens: u.tokens,
+        sessions: {},
+        balance: u.balance,
+        currency: "CNY",
+        balance_at: u.at,
+        balance_error: "",
       };
     }
 

@@ -32,7 +32,7 @@ const DIRS = ["app", "assets", "lib", "web", "tools", "standalone-py"];
 
 // 另外单独挑的文件：相对 root → 相对 outDir
 const EXTRA = [
-  ["dist/dsh-plugin-ojingjing-0.3.0.tgz", "dist/dsh-plugin-ojingjing-0.3.0.tgz"],
+  ["dist/dsh-plugin-ojingjing-0.4.0.tgz", "dist/dsh-plugin-ojingjing-0.4.0.tgz"],
 ];
 
 // 任何层级都跳过的东西
@@ -109,7 +109,7 @@ writeFileSync(
 |---|---|
 | 只想点点看原型（不装任何东西） | 双击 \`app/index.html\`，看 \`README.md\` 的「怎么玩」 |
 | 装进 DSH（真数据，独立桌面窗） | \`PLUGIN.md\` → \`node tools/install-plugin.mjs\` → 重启 DSH |
-| 分发给别人的 npm 包 | \`dist/dsh-plugin-ojingjing-0.3.0.tgz\`（\`npm i\` 这个文件，再登记 bundles） |
+| 分发给别人的 npm 包 | \`dist/dsh-plugin-ojingjing-0.4.0.tgz\`（\`npm i\` 这个文件，再登记 bundles） |
 | 要独立置顶的桌面窗 | \`standalone-py/README.md\`（需要 Python + PySide6） |
 | 换角色形象 / 图标 | \`README.md\` 的「外观（自定义头像 / 背景）」 |
 | 看设计稿逐条对照 | \`README.md\` 的「对应设计稿的实现情况」 |

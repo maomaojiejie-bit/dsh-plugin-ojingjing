@@ -11,7 +11,7 @@
 
   const EXPR = {
     sleep: "st-sleep", // 空闲：睡觉 + zzz
-    focus: "st-focus", // 工作中：专注 + 喷水
+    focus: "st-focus", // 工作中：专注 + 头顶转圈
     alert: "st-alert", // 需要确认：瞪眼 + 眉毛 + 感叹号
     happy: "st-happy", // 完成未读：眯眼笑 + 星星
     offline: "st-offline", // 离线：灰度 + X 眼
@@ -25,11 +25,51 @@
       "M31.5 13.5c1.5-4.5 3.7-6 4.1-2 .2 2-.9 3.3-2.8 3.7 1.5 1.3 2.6 4.3 2 7.3-.4 2.7-2.2 3.1-3.2 1.7-1.2-1.9-1.6-5-.1-10.7z",
     belly:
       "M5.5 26.5c1.5 3 5 4.8 9 5.3 4.5.6 10 0 14.3-1.8-2.3.8-8.8 1.5-14.3.6-4-.7-7.1-2-9-4.1z",
-    spoutColumn:
-      "M8.2 13c-.8-3.5-.6-7.5.6-10.2.4-1.2 1.1-1.2 1.5 0 1.1 2.7 1 6.7-.2 10.2z",
-    spoutSplash:
-      "M8.9 3.2c-2.3-1.6-5-1.2-6 .4 1.4.4 3.1.9 4.7 1.5zm1.1 0c2.3-1.6 5-1.2 6 .4-1.4.4-3.1.9-4.7 1.5z",
   };
+
+  /* ---- 工作环（工作中）-------------------------------------------
+     这里原本是「喷水」：一根水柱 + 两瓣水花。静止时读起来像头顶长了一撮白毛，
+     动起来又是「升腾 + 缩放 + 淡出」三条属性一起变，软件光栅下最费。
+     换成本地化的转圈：三颗泡泡绕一个圆心匀速自转，外面再套一圈虚线反向慢转。
+     只动 transform-rotate，linear 匀速，没有形变、没有透明度抖动，
+     因此它被归为「功能动画」——软件光栅模式（html.xj-sw）里也保留。 */
+  const ORBIT = { cx: 28.4, cy: 7.8, r: 4.5 };
+  const ORBIT_DOTS = [
+    { deg: 0, r: 1.15, fill: "#CDE9FF", opacity: 1 },
+    { deg: 120, r: 0.92, fill: "#DCF1FF", opacity: 0.85 },
+    { deg: 240, r: 0.76, fill: "#EAF7FF", opacity: 0.7 },
+  ];
+  function orbitNodes() {
+    const { cx, cy, r } = ORBIT;
+    return [
+      svg("circle", {
+        class: "orbit-track",
+        cx: cx,
+        cy: cy,
+        r: r,
+        fill: "none",
+        stroke: "#BFE4FF",
+        "stroke-width": "1",
+        "stroke-dasharray": "1.5 3.1",
+        "stroke-linecap": "round",
+        opacity: "0.5",
+      }),
+      svg(
+        "g",
+        { class: "orbit-arm" },
+        ...ORBIT_DOTS.map((d) => {
+          const a = (d.deg * Math.PI) / 180;
+          return svg("circle", {
+            cx: (cx + r * Math.cos(a)).toFixed(2),
+            cy: (cy + r * Math.sin(a)).toFixed(2),
+            r: d.r,
+            fill: d.fill,
+            opacity: d.opacity,
+          });
+        })
+      ),
+    ];
+  }
 
   /* ---- 角色皮肤（用户指定形象）-------------------------------
      有 XJ.avatarData 时，「身体 + 眼睛」换成角色图，状态装饰（zzz / 喷水 /
@@ -65,15 +105,10 @@
       ],
     },
     focus: {
-      cls: "spout",
-      // 角色是正脸，喷水挪到右上角，别糊在头发上
+      cls: "orbit",
+      // 角色是正脸，工作环挪到右上角，别糊在头发上
       style: "transform:translate(17px,-1px) scale(.82);transform-box:view-box",
-      shapes: [
-        ["path", { d: P.spoutColumn, fill: "#CDE9FF", opacity: "0.5" }],
-        ["path", { d: P.spoutSplash, fill: "#DCF1FF", opacity: "0.85" }],
-        ["circle", { cx: "8", cy: "1.6", r: "0.9", fill: "#EAF7FF", opacity: "0.8" }],
-        ["circle", { cx: "12.4", cy: "2.6", r: "0.7", fill: "#EAF7FF", opacity: "0.6" }],
-      ],
+      build: orbitNodes,
     },
     alert: {
       cls: "bang",
@@ -107,11 +142,12 @@
     el.appendChild(img);
 
     const fx = FXV[st.replace("st-", "")];
-    if (fx && fx.shapes.length) {
+    const kids = fx ? (fx.build ? fx.build() : (fx.shapes || []).map(([tag, attrs]) => svg(tag, attrs))) : [];
+    if (kids.length) {
       const group = svg(
         "g",
         { class: fx.cls, style: fx.style || "transform-box:fill-box;transform-origin:center" },
-        ...fx.shapes.map(([tag, attrs]) => svg(tag, attrs))
+        ...kids
       );
       el.appendChild(
         svg("svg", { viewBox: "0 0 36 36", class: "whale-fx", "aria-hidden": "true", focusable: "false" }, group)
@@ -153,15 +189,8 @@
         )
       ),
 
-      /* ---- 附属件：喷水（工作中） ---- */
-      svg(
-        "g",
-        { class: "spout", style: "transform-box:fill-box;transform-origin:30% 100%" },
-        svg("path", { d: P.spoutColumn, fill: "#CDE9FF", opacity: "0.55" }),
-        svg("path", { d: P.spoutSplash, fill: "#DCF1FF", opacity: "0.85" }),
-        svg("circle", { cx: "8", cy: "1.6", r: "0.9", fill: "#EAF7FF", opacity: "0.8" }),
-        svg("circle", { cx: "12.4", cy: "2.6", r: "0.7", fill: "#EAF7FF", opacity: "0.6" })
-      ),
+      /* ---- 附属件：工作环（工作中） ---- */
+      svg("g", { class: "orbit" }, ...orbitNodes()),
 
       /* ---- 附属件：zzz（空闲） ---- */
       svg(

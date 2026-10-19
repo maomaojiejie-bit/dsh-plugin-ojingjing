@@ -76,7 +76,7 @@ data URL 是为了让 `file://` 原型和 `/xj/static` 插件两份页面用同�
 | `composer.js` | 气泡 / 输入条 / 面板共用的 Composer |
 | `view-*.js` | 各形态与遮罩：`view-bubble` `view-quickbar` `view-panel` `view-settings` `view-onboarding` `view-capture` |
 | `shot.js` | 截图提问流程（遮罩 → 框选 → 卡片 → 发送） |
-| `whale.js` | 鲸鱼本体：五表情 + 附属件（喷水、zzz、感叹号、星星、X 眼） |
+| `whale.js` | 鲸鱼本体：五表情 + 附属件（工作转圈、zzz、感叹号、星星、X 眼） |
 | `avatar.js` | 角色头像的 data URL（生成物，别手改） |
 | `icons.js` | 24px 线性图标（自绘 path） |
 | `devbar.js` | 原型控制台 |

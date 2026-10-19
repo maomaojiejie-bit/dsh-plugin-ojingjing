@@ -22,11 +22,62 @@
       { class: "form panel glass h" + size, role: "dialog", "aria-label": "哦鲸鲸面板" },
       header(s, st, counts),
       quickActions(s, counts),
+      usageBar(s),
       hasPending ? pendingZone(s, pending) : null,
       sessionList(s),
       XJ.composer.render(s, "panel")
     );
     return el;
+  }
+
+  /* ---------------- 用量条（今日花费 / DeepSeek 余额） ---------------- */
+  function money(n, cur) {
+    const num = Number(n) || 0;
+    const sym = !cur || cur === "CNY" ? "¥" : "";
+    return sym + (num >= 1 || num === 0 ? num.toFixed(2) : num.toFixed(3));
+  }
+
+  function fmtTokens(n) {
+    const v = Number(n) || 0;
+    if (v < 1000) return v + " tok";
+    return (v >= 10000 ? (v / 1000).toFixed(0) : (v / 1000).toFixed(1)) + "k tok";
+  }
+
+  function usageBar(s) {
+    const u = s.usage || {};
+    const today = Number(u.today) || 0;
+    const tokens = Number(u.tokens) || 0;
+    const loading = !!u.loading;
+    const known = u.balance != null && isFinite(u.balance);
+    const balText = loading && !known ? "查询中…" : known ? money(u.balance, u.currency) : "未获取";
+    const balHint = u.error ? "上次查询失败：" + u.error : "DeepSeek 余额（点右侧刷新）";
+
+    return h(
+      "div",
+      { class: "usage-bar", role: "status" },
+      h(
+        "span",
+        {
+          class: "usage-item usage-day",
+          title: u.day ? u.day + " 零点起的小计（各会话相加）" : "今日花费",
+        },
+        h("i", { class: "usage-k" }, "今日"),
+        h("b", { class: "usage-v" }, money(today, u.currency)),
+        tokens > 0 ? h("span", { class: "usage-sub" }, fmtTokens(tokens)) : null
+      ),
+      h(
+        "span",
+        { class: "usage-item usage-bal", title: balHint },
+        h("i", { class: "usage-k" }, "余额"),
+        h("b", { class: known ? "usage-v" : "usage-v usage-unknown", title: u.error || "" }, balText)
+      ),
+      XJ.ui.iconBtn("refresh", {
+        title: loading ? "正在查询…" : "刷新余额",
+        size: 14,
+        class: loading ? "usage-refresh is-loading" : "usage-refresh",
+        onClick: () => XJ.app.refreshUsage(),
+      })
+    );
   }
 
   /* ---------------- 头部 ---------------- */
@@ -449,6 +500,19 @@
     return scroll;
   }
 
+  /* 会话卡右上角的单价：这个会话「今天」花了多少钱（插件按会话记账） */
+  function sessCost(s, sess) {
+    const rec = s.usage && s.usage.sessions ? s.usage.sessions[sess.id] : null;
+    const cost = rec ? Number(rec.cost) || 0 : 0;
+    if (!(cost > 0)) return null;
+    const text = money(cost, s.usage.currency);
+    return h(
+      "span",
+      { class: "sess-cost", title: "这个会话今天花了 " + text + (rec.tokens ? "（" + fmtTokens(rec.tokens) + "）" : "") },
+      text
+    );
+  }
+
   function sessionCard(s, sess, pending) {
     const hasPending = pending && pending.length;
     const isTarget = (s.composer.targetSessionId || (s.sessions.find((x) => x.active) || {}).id) === sess.id;
@@ -488,6 +552,8 @@
         { class: "sess-action" },
         h("span", { class: "ellipsis" }, actText),
         h("span", { class: "spacer" }),
+        // 这个会话今天花了多少（来自插件账本；没有数据就不占地方）
+        sessCost(s, sess),
         h("span", { class: "t-ter" }, fmtRel(sess.lastActivityAt))
       ),
       sess.state === "working"

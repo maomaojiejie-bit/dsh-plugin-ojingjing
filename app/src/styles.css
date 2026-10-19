@@ -318,7 +318,7 @@ body.gl-solid .glass {
 .whale .eye-happy,
 .whale .eye-offline,
 .whale .brows,
-.whale .spout,
+.whale .orbit,
 .whale .zzz,
 .whale .stars,
 .whale .bang {
@@ -335,13 +335,28 @@ body.gl-solid .glass {
   opacity: 1;
   animation: zzzFloat 2.6s var(--ease-out) infinite;
 }
-/* 状态：工作中（专注 + 喷水） */
+/* 状态：工作中（专注 + 头顶转圈） */
 .whale.st-focus .eye-open {
   opacity: 1;
 }
-.whale.st-focus .spout {
+.whale.st-focus .orbit {
   opacity: 1;
-  animation: spoutRise 1.8s var(--ease-out) infinite;
+}
+/* 转圈是「还在干活」的进度反馈，属于功能动画而不是装饰：
+   只动 rotate，linear 匀速，没有形变也没有透明度抖动——
+   软件光栅模式（html.xj-sw）里也让它继续转（只把速度放慢一档，见 §21）。
+   圆心写死成 28.4px 7.8px（与 whale.js 的 ORBIT 常量一致），
+   transform-box 用 view-box 才能按 viewBox 用户单位取原点。 */
+.whale.st-focus .orbit-arm {
+  animation: orbitSpin 1.5s linear infinite;
+  transform-box: view-box;
+  transform-origin: 28.4px 7.8px;
+}
+/* 外圈虚线反向慢转：两层转速不同，读起来是「环在转」而不是「整块在晃」 */
+.whale.st-focus .orbit-track {
+  animation: orbitSpin 6.5s linear infinite reverse;
+  transform-box: view-box;
+  transform-origin: 28.4px 7.8px;
 }
 /* 状态：需要确认（瞪眼 + 眉毛 + 感叹号） */
 .whale.st-alert .eye-open {
@@ -410,17 +425,9 @@ body.gl-solid .glass {
     opacity: 0;
   }
 }
-@keyframes spoutRise {
-  0% {
-    transform: translateY(3px) scale(0.9);
-    opacity: 0;
-  }
-  40% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateY(-6px) scale(1.05);
-    opacity: 0;
+@keyframes orbitSpin {
+  to {
+    transform: rotate(360deg);
   }
 }
 @keyframes bangPop {
@@ -1304,6 +1311,91 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
 }
 .panel-head-sub .sep {
   color: rgba(255, 255, 255, 0.22);
+}
+
+/* 用量条：今日花费 / 余额 / 刷新（一行 22px，别抢会话列表的地方） */
+.usage-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 16px 10px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.032);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  font-size: 11px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.6);
+  transition: background var(--dur-hover) var(--ease-soft), border-color var(--dur-hover) var(--ease-soft);
+}
+.usage-bar:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+.usage-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+.usage-day {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.usage-k {
+  font-style: normal;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.34);
+  letter-spacing: 0.04em;
+}
+.usage-v {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.86);
+  transition: color var(--dur-state) var(--ease-soft);
+}
+.usage-sub {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+.usage-unknown {
+  color: rgba(255, 255, 255, 0.38);
+  font-weight: 500;
+}
+.usage-bal {
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+}
+.usage-refresh {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.42);
+}
+.usage-refresh:hover {
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.07);
+}
+.usage-refresh.is-loading {
+  color: rgba(255, 255, 255, 0.7);
+}
+.usage-refresh.is-loading .icon {
+  animation: spin 900ms linear infinite;
+}
+/* 会话卡上的花费小字 */
+.sess-cost {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.42);
+  padding: 0 6px;
+  margin-right: 2px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  flex: none;
 }
 
 /* 快捷动作 64px */
@@ -3169,9 +3261,11 @@ body.through-mode .stage * {
 .through-banner .btn-mini {
   flex: none;
 }
-/* 全屏 / 演示模式下的降噪：不呼吸、不喷水（§6.2 低功耗） */
+/* 全屏 / 演示模式下的降噪：不呼吸、不转圈（§6.2 低功耗）
+   转圈要指名到子元素：animation 不是继承属性，挂在外层 .orbit 上停不住里面那两层。 */
 body.is-presenting .aura,
-body.is-presenting .spout,
+body.is-presenting .orbit-arm,
+body.is-presenting .orbit-track,
 body.is-presenting .zzz,
 body.is-presenting .stars {
   animation: none !important;
@@ -3217,8 +3311,11 @@ body.custom-bg .form-shot .shot-card {
    21. 软件光栅模式（html.xj-sw）
    Qt 外壳没拿到 GPU 时（ANGLE/WARP 软件光栅），下面两层是掉帧主因：
      · backdrop-filter：每帧都要重新模糊窗口背后的内容；
-     · 装饰性无限动画：鲸鱼呼吸、光环呼吸、zzz、水柱、星星。
+     · 装饰性无限动画：鲸鱼呼吸、光环呼吸、zzz、星星、闪光。
    硬件模式（默认）不加 xj-sw，视觉完全不受影响。
+   注意这里只停「装饰」，不停「功能」：工作环的转圈、会话卡的转圈图标
+   是「还在干活」的唯一提示，全停掉界面就成了静止画面。进度条流光算装饰，
+   照样停（进度条本身的长度已经说明了进度）。
    ============================================================ */
 html.xj-sw *,
 html.xj-sw *::before,
@@ -3230,7 +3327,6 @@ html.xj-sw *::after {
 html.xj-sw .whale,
 html.xj-sw .whale .whale-body,
 html.xj-sw .whale .zzz,
-html.xj-sw .whale .spout,
 html.xj-sw .whale .bang,
 html.xj-sw .whale .stars,
 html.xj-sw .whale.st-offline .eye-offline,
@@ -3239,6 +3335,15 @@ html.xj-sw .aura::before,
 html.xj-sw .sess-card.working .progress:not(.done) > i::after {
   animation: none !important;
   will-change: auto;
+}
+
+/* 工作环放慢但不许停：1.5s/圈 → 2.4s/圈。虚线外圈在软件光栅里干脆不转，
+   少一层每帧要重画的区域，视觉上靠三颗泡泡已经足够读出「在转」。 */
+html.xj-sw .whale.st-focus .orbit-arm {
+  animation-duration: 2.4s;
+}
+html.xj-sw .whale.st-focus .orbit-track {
+  animation: none !important;
 }
 
 /* 软件光栅里去掉子像素抗锯齿：透明窗口上的文字本来就不在真实背景上，
@@ -3309,7 +3414,8 @@ html.xj-scrolling .whale .whale-body,
 html.xj-scrolling .whale-av,
 html.xj-scrolling .whale .eye-open,
 html.xj-scrolling .whale .zzz,
-html.xj-scrolling .whale .spout,
+html.xj-scrolling .whale .orbit-arm,
+html.xj-scrolling .whale .orbit-track,
 html.xj-scrolling .whale .bang,
 html.xj-scrolling .whale .stars,
 html.xj-scrolling .sess-card.working .progress:not(.done) > i::after,

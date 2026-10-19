@@ -41,6 +41,8 @@
     cancelHoverTimer,
     resetDock,
     loadSnapshot,
+    refreshUsage,
+    markTouch,
     init,
   });
 
@@ -89,6 +91,22 @@
     document.addEventListener("keydown", onKeydown, true);
     document.addEventListener("paste", onPaste, true);
     bindDragAndDrop();
+
+    // 「多久没碰」的计时依据：鼠标/键盘/滚轮/切回窗口都算触碰过
+    ["pointerdown", "pointermove", "keydown", "wheel"].forEach((type) => {
+      window.addEventListener(type, markTouch, { passive: true });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") markTouch();
+    });
+
+    // 面板开着时顺手刷一下余额（插件侧 60s 缓存，这里的频率拿不到就是拿不到，不会打爆接口）
+    setInterval(() => {
+      if (S().ui.form === "panel") refreshUsage({ quiet: true });
+    }, 60000);
+
+    // 闲下来主动搭话
+    setInterval(maybeNudge, 15000);
 
     // 滚动期间暂停装饰动画 / 悬停过渡：软件光栅下「转圈 + 呼吸 + 卡片 hover」和滚动抢帧，
     // 停掉的这几帧正好是手感最敏感的几帧；松手 160ms 后自动恢复。
@@ -156,7 +174,13 @@
     document.body.classList.toggle("is-presenting", XJ.state.presenting(s));
     document.body.classList.toggle("is-offline", s.connection === "offline");
     document.body.classList.toggle("through-mode", !!s.settings.clickThrough);
-    document.body.classList.toggle("reduce-motion", s.settings.motion === "reduce" || !!s.settings.reduceAnim);
+    // 减少动画：设置项（motion=reduce / reduceAnim）或系统「减少动态效果」任一命中就生效。
+    // 系统那一项原来只在滚动里读，界面其他动画没跟着降级——系统级别的偏好应该全局认。
+    const sysReduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    document.body.classList.toggle(
+      "reduce-motion",
+      s.settings.motion === "reduce" || !!s.settings.reduceAnim || sysReduce
+    );
     document.documentElement.dataset.motion = s.settings.reduceAnim ? "off" : "on";
 
     const form = s.ui.form;
@@ -586,11 +610,21 @@
   }
 
   /* 滚轮缓动：原生滚轮在软件光栅下是「一格一跳」，这里接管成逐帧缓动（接近触控板惯性）。
-     Ctrl/⌘（缩放）、纯横向滚动、减少动画、输入框一律交回浏览器。 */
+     Ctrl/⌘（缩放）、纯横向滚动、减少动画、输入框一律交回浏览器。
+
+     缓动改成「按时间插值」而不是「按帧逼近」：
+     原来是 scrollTop += gap * 0.2，每帧固定收 20%，看着跟手，但它的速度是「每一帧」
+     而不是「每一毫秒」——设备或窗口一掉到 30fps，同样的滚动就要走两倍长的时间，
+     在软件光栅的独立窗里，这一条比什么曲线都更能让人觉出「卡」。
+     现在从当前 scrollTop 起、按 easeOutCubic 在固定时长内走完：
+     帧率高低只影响中间采样几帧，落位时间不变。 */
   function bindSmoothScroll() {
-    const EASE = 0.2; // 每帧向目标逼近的比例：越小越飘，越大越跟手
-    const MIN_STEP = 0.6; // 离目标不到这么多像素就直接落位，不再多刷一帧
+    const MIN_DUR = 170; // 一小格也要有这么长，太短就是「瞬移」
+    const MAX_DUR = 340; // 一屏以上也不再拖
+    const PX_PER_MS = 3.4; // 距离换时长：滚得越远走得越久（170ms ≈ 580px）
+    const MIN_STEP = 0.4; // 离目标不到这么多像素就直接落位，不再多刷一帧
     const LINE_PX = 16; // deltaMode=1（按行滚）时的换算
+    let tweenSc = null; // 当前正在做缓动的滚动容器（拖滚动条时要把它收掉）
     const reduceMotion = () =>
       document.body.classList.contains("reduce-motion") ||
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -604,6 +638,38 @@
         el = el.parentElement;
       }
       return null;
+    };
+
+    const stopTween = (sc) => {
+      if (sc.__xjRaf) cancelAnimationFrame(sc.__xjRaf);
+      sc.__xjRaf = 0;
+      if (tweenSc === sc) tweenSc = null;
+    };
+
+    const startTween = (sc) => {
+      stopTween(sc);
+      tweenSc = sc;
+      const from = sc.scrollTop;
+      const dist = sc.__xjTarget - from;
+      if (Math.abs(dist) < MIN_STEP) {
+        sc.scrollTop = sc.__xjTarget;
+        return;
+      }
+      const dur = Math.min(MAX_DUR, Math.max(MIN_DUR, Math.abs(dist) / PX_PER_MS));
+      const t0 = performance.now();
+      const tick = (now) => {
+        const t = Math.min(1, (now - t0) / dur);
+        const k = 1 - Math.pow(1 - t, 3); // easeOutCubic：起步快、收尾长，跟手又不生硬
+        const gap = sc.__xjTarget - (from + dist * k);
+        if (t >= 1 || Math.abs(gap) < MIN_STEP) {
+          sc.scrollTop = sc.__xjTarget;
+          sc.__xjRaf = 0;
+          return;
+        }
+        sc.scrollTop = from + dist * k;
+        sc.__xjRaf = requestAnimationFrame(tick);
+      };
+      sc.__xjRaf = requestAnimationFrame(tick);
     };
 
     stageEl.addEventListener(
@@ -621,22 +687,20 @@
         e.preventDefault();
         // 连着滚时在「还没走完的目标」上累加，而不是在当前 scrollTop 上累加，
         // 否则快速连滚会吞掉行程（滚 3 格只走 1 格）
-        const base = sc.__xjScrollRaf ? sc.__xjScrollTarget : sc.scrollTop;
-        sc.__xjScrollTarget = Math.min(max, Math.max(0, base + e.deltaY * unit));
-        if (sc.__xjScrollRaf) return;
-        const tick = () => {
-          const gap = sc.__xjScrollTarget - sc.scrollTop;
-          if (Math.abs(gap) < MIN_STEP) {
-            sc.scrollTop = sc.__xjScrollTarget;
-            sc.__xjScrollRaf = 0;
-            return;
-          }
-          sc.scrollTop += gap * EASE;
-          sc.__xjScrollRaf = requestAnimationFrame(tick);
-        };
-        sc.__xjScrollRaf = requestAnimationFrame(tick);
+        const base = sc.__xjRaf ? sc.__xjTarget : sc.scrollTop;
+        sc.__xjTarget = Math.min(max, Math.max(0, base + e.deltaY * unit));
+        startTween(sc);
       },
       { passive: false }
+    );
+
+    // 拖滚动条 / 键盘翻页时，把还在跑的缓动收掉：两边同时写 scrollTop，手感和位置都会打架。
+    stageEl.addEventListener(
+      "pointerdown",
+      () => {
+        if (tweenSc) stopTween(tweenSc);
+      },
+      { passive: true }
     );
   }
 
@@ -844,6 +908,8 @@
   /* ============================ Mock 事件 → 状态 ============================ */
   function onHarnessEvent(type, p) {
     const s = S();
+    // 宿主还在推进事情，说明人就在电脑前：把「多久没碰」的计时重置掉
+    if (type === "sessions.changed" || type === "approval.requested") markTouch();
     switch (type) {
       case "approval.requested":
         A().approvalRequested({
@@ -877,6 +943,11 @@
 
       case "sessions.changed":
         A().setSnapshot({ sessions: p.sessions, connection: s.connection === "offline" ? "offline" : "online" });
+        break;
+
+      case "usage.changed":
+        // 花费/余额只在真的变了时才来，不会跟着 1.5 秒轮询一起抖
+        A().setUsage(p.usage || p);
         break;
 
       case "session.completed": {
@@ -1036,6 +1107,7 @@
     const snap = XJ.mock.harness.snapshot();
     const s = S();
     A().setSnapshot({ sessions: snap.sessions, connection: snap.connection });
+    if (snap.usage) A().setUsage(snap.usage);
     // 补：快照里有的待办，本地没有 → 加上
     snap.pending.forEach((p) => {
       if (!s.approvals[p.id]) {
@@ -1061,6 +1133,83 @@
     if (snap.connection === "offline" && s.connection !== "reconnecting") {
       setReconnecting();
     }
+  }
+
+  /* ============================ 用量 / 余额 ============================ */
+  let usageBusy = false;
+
+  /**
+   * 拉用量。插件 /xj/usage 的 POST 会真的去 DeepSeek 问一次余额，GET 只是把缓存账本吐出来。
+   * quiet = 面板停留时的顺手刷新：不转圈、不弹提示，静默失败。
+   */
+  async function refreshUsage(opts) {
+    const quiet = !!(opts && opts.quiet);
+    if (usageBusy) return;
+    if (!(XJ.embed && XJ.embed.enabled)) {
+      // 原型里没有真接口：造一份假数据，免得按钮点了像坏的
+      loadSnapshot();
+      return;
+    }
+    usageBusy = true;
+    if (!quiet) A().usageLoading(true);
+    try {
+      const res = await fetch("/xj/usage", { method: "POST", cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      A().setUsage(await res.json());
+      const u = S().usage;
+      if (!quiet && u.error) XJ.ui.toast({ type: "warn", title: "余额没拿到", sub: u.error });
+    } catch (err) {
+      if (!quiet) {
+        XJ.ui.toast({ type: "warn", title: "余额没拿到", sub: String((err && err.message) || err) });
+      }
+    } finally {
+      usageBusy = false;
+      A().usageLoading(false);
+    }
+  }
+
+  /* ============================ 闲下来主动搭话 ============================ */
+  let lastTouch = Date.now();
+  let nudgeStrikes = 0; // 连着没人理就慢慢拉长间隔，别变骚扰
+  let nudgeHideTimer = null;
+
+  function markTouch() {
+    lastTouch = Date.now();
+    nudgeStrikes = 0;
+  }
+
+  function nudgeWaitMs(s) {
+    const base = clamp(Number(s.settings.idleNudgeMin) || 6, 1, 120) * 60000;
+    return Math.min(base * (1 + nudgeStrikes * 0.6), 45 * 60000);
+  }
+
+  function maybeNudge() {
+    const s = S();
+    if (!s.settings.idleNudge) return;
+    if (s.ui.form !== "collapsed") return; // 已经弹出东西了：人在，或者我们已经在说话
+    if (nudgeHideTimer) return;
+    if (s.connection === "reconnecting") return;
+    // 页面被切走 / 窗口被最小化时别自说自话（回来第一眼看到一句话就够了，不该是弹在半空）
+    if (document.visibilityState === "hidden") return;
+    // 真在跑活、或者有待批准：球上已经有角标在喊了，这时候再冒泡就是打扰
+    if (s.sessions.some((x) => x.state === "working")) return;
+    if (XJ.state.pendingList(s).length) return;
+    if (Date.now() - lastTouch < nudgeWaitMs(s)) return;
+    const line = XJ.lines && XJ.lines.pickNudge ? XJ.lines.pickNudge(s) : null;
+    if (!line || !line.text) return;
+    s.ui.line = line;
+    document.body.dataset.hoverExpand = "1"; // 用悬停那套「慢慢绽开」，不用点击的急曲线
+    A().setForm("bubble");
+    nudgeStrikes += 1;
+    lastTouch = Date.now();
+    // 一直没人理就自己收回去，别赖在屏幕上
+    nudgeHideTimer = setTimeout(() => {
+      nudgeHideTimer = null;
+      if (S().ui.form === "bubble") {
+        A().setForm("collapsed");
+        delete document.body.dataset.hoverExpand;
+      }
+    }, 14000);
   }
 
   /* ============================ 定时刷新 ============================ */

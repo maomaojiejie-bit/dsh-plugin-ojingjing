@@ -66,7 +66,7 @@ function renderWhale() {
         display:flex;align-items:center;justify-content:center;
         box-shadow:inset 0 1px 0 rgba(255,255,255,.18)}
   #icon .whale .brows,#icon .whale .bang,#icon .whale .zzz,
-  #icon .whale .stars,#icon .whale .spout{display:none!important}
+  #icon .whale .stars,#icon .whale .orbit{display:none!important}
   #icon .whale .eye-offline,#icon .whale .eye-happy{display:none!important}
   #icon .whale .eye-open{display:block!important;opacity:1!important}
 </style></head>

@@ -160,5 +160,80 @@
     return { text, ctx, at: Date.now() };
   }
 
-  XJ.lines = { pick, contextOf, pools: POOLS };
+  /* ---------- 闲置搭话池（app.js 的 maybeNudge 用） ----------
+     约束跟其它台词一致：短、宠物口吻、海洋味、称「老大」，不催进度、不上价值。
+     分四档：刚闲下来（soon）/ 真的蹲久了（long）/ 有未读（unread）/ 报一句今天的账（money）/ 半夜（night）。 */
+  const NUDGES = {
+    soon: [
+      "老大，我在，有事喊我一声就行。",
+      "水面很平，老大。我就在这儿蹲着。",
+      "我数了三遍泡泡，你还没理我。",
+      "老大，要不要我帮你盯一会儿？",
+      "歇一会儿也没关系，我替你看门。",
+      "老大，喝水了吗？我记着呢。",
+      "发呆也算正事，我陪你一起。",
+      "尾巴转了一圈，还是没人找我。",
+      "老大，想起来还有我这个小家伙吗？",
+      "不着急，海面一直很安静。",
+    ],
+    long: [
+      "老大，你已经很久没碰我了，我有点无聊。",
+      "我在原地漂了好久了，你还好吗？",
+      "老大，灯光还亮着，我就还在这儿。",
+      "这么久不动，我把尾巴都坐麻了。",
+      "老大，是不是忙得脚不沾地？我等你。",
+      "海面一直没动静，我偷偷打了个盹。",
+      "老大，我不会催你，只是冒个泡。",
+      "要是需要搭把手，掀开我就行。",
+      "鲸鱼一天要吃好多小鱼，我一天只要一句指令。",
+      "老大，我在，一直都在。",
+    ],
+    unread: [
+      "老大，攒了 {n} 条没看呢。",
+      "有 {n} 条结果在等你，不急着现在看。",
+      "老大，{n} 条待看，我先替你把灯留着。",
+    ],
+    money: [
+      "老大，今天已经花掉 {cost} 了，我盯着呢。",
+      "账单我记着：今天 {cost}，还没超。",
+      "今天这顿料 {cost}，不算贵。",
+      "老大，今天花了 {cost}，余额我待会儿再看一眼。",
+    ],
+    night: [
+      "夜里三点，海最安静。老大早点睡。",
+      "这么晚还在线，我陪你到最后。",
+      "老大，月亮的反光很好看，你也该歇了。",
+      "困了就睡吧，有事明天再说。",
+    ],
+  };
+
+  function nudgeMoney(n) {
+    if (!(n > 0)) return "";
+    return n >= 1 ? "¥" + n.toFixed(2) : "¥" + n.toFixed(3);
+  }
+
+  /** 闲置搭话：返回 { text, ctx, at }，形状与 pick() 一致（view-bubble 直接吃这个） */
+  function pickNudge(s) {
+    s = s || XJ.state.store.state;
+    const unread = (s.sessions || []).reduce((n, x) => n + (x.unread || 0), 0);
+    const spent = s.usage ? Number(s.usage.today) || 0 : 0;
+    const hour = new Date().getHours();
+    const night = hour >= 0 && hour < 6;
+
+    let key = Math.random() < 0.5 ? "soon" : "long";
+    if (unread > 0) key = "unread";
+    else if (spent > 0 && Math.random() < 0.4) key = "money";
+    else if (night && Math.random() < 0.6) key = "night";
+
+    const pool = NUDGES[key] || NUDGES.soon;
+    const filled = pool
+      .map((t) => t.replace(/\{n\}/g, String(unread)).replace(/\{cost\}/g, nudgeMoney(spent)))
+      .filter(Boolean);
+    const usable = filled.length > 1 ? filled.filter((t) => t !== LAST.text) : filled;
+    const text = usable[Math.floor(Math.random() * usable.length)] || filled[0];
+    LAST.text = text;
+    return { text, ctx: "idle", at: Date.now(), nudge: key };
+  }
+
+  XJ.lines = { pick, pickNudge, contextOf, pools: POOLS, nudgePools: NUDGES };
 })();
