@@ -343,6 +343,8 @@
       ? "已处理"
       : null;
 
+    // 印章只在「正在处理 / 已处理」时亮：失败重试态不挂旧印章（会误导）
+    const stamping = (submitting || item.status === "resolved") && (item.pendingDecision === "allow" || item.pendingDecision === "deny");
     return h(
       "div",
       {
@@ -350,9 +352,24 @@
           "approval-card" +
           (item.risk === "danger" ? " danger-card" : "") +
           (expired ? " is-settled" : "") +
-          (o.compact ? " compact" : ""),
-        dataset: { approvalId: item.id },
+          (o.compact ? " compact" : "") +
+          (stamping && item.pendingDecision === "allow" ? " deciding-allow" : stamping && item.pendingDecision === "deny" ? " deciding-deny" : "") +
+          (local.denyConfirm ? " deny-warn" : ""),
+        dataset: { approvalId: item.id, enterKey: "appr:" + item.id },
       },
+      // 决定反馈印章：submitting 起按 pendingDecision 弹入（CSS .deciding-* 驱动）
+      h(
+        "div",
+        { class: "appr-stamp appr-stamp-allow", "aria-hidden": "true" },
+        XJ.icon("check", 12),
+        h("span", null, "通过")
+      ),
+      h(
+        "div",
+        { class: "appr-stamp appr-stamp-deny", "aria-hidden": "true" },
+        XJ.icon("x", 12),
+        h("span", null, "拒绝")
+      ),
       h(
         "div",
         { class: "appr-top" },
@@ -453,6 +470,7 @@
       "div",
       {
         class: "sess-card" + (isTarget ? " is-active" : ""),
+        dataset: { enterKey: "sess:" + sess.id },
         onclick: () => {
           A().composerTarget(sess.id);
           A().sessionViewed(sess.id);
@@ -473,9 +491,9 @@
         h("span", { class: "t-ter" }, fmtRel(sess.lastActivityAt))
       ),
       sess.state === "working"
-        ? h("div", { class: "progress" }, h("i", { style: { width: Math.round(sess.progress || 0) + "%" } }))
+        ? h("div", { class: "progress" }, h("i", { style: { transform: "scaleX(" + Math.round(sess.progress || 0) / 100 + ")" } }))
         : sess.progress === 100
-        ? h("div", { class: "progress done" }, h("i", { style: { width: "100%" } }))
+        ? h("div", { class: "progress done" }, h("i", { style: { transform: "scaleX(1)" } }))
         : null,
       confirming
         ? h(

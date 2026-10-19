@@ -418,7 +418,7 @@ try {
   // 但 venv 里的 PySide6 首次装要下载。这里只提醒，不阻断。
   if (opts.deps && !opts.dryRun) {
     const venvPyw = path.join(SHELL_DIR, ".venv", "Scripts", "pythonw.exe");
-    if (!fs.existsSync(venvPyw)) info("standalone-py/.venv 还没就绪，第 5 步会建 venv 并下载 PySide6（约 300MB）");
+    if (!fs.existsSync(venvPyw)) info("standalone-py/.venv 还没就绪，第 5 步会建 venv 并下载 PySide6（PySide6 6.12 实测约 700MB，慢）");
   }
 
   /* ---------------------------------------------------- 2 构建前端 */
@@ -432,7 +432,22 @@ try {
   } else {
     if (!fs.existsSync(buildScript)) die(`缺少 ${buildScript}`);
     run([process.execPath, buildScript]);
-    if (!opts.dryRun) ok("前端已构建");
+    if (!opts.dryRun) {
+      ok("前端已构建");
+      // 构建链自检：app.html 不该再引用原型专用文件；static 资源应该被 minify 过
+      const appHtml = fs.readFileSync(path.join(ROOT, "web", "app.html"), "utf8");
+      if (/\/xj\/static\/src\/(mock|devbar)\.js/.test(appHtml)) {
+        warn("web/app.html 里还引用着 mock.js/devbar.js —— build-plugin.mjs 的剥离逻辑该修了");
+      } else {
+        ok("embed 剥离生效（mock.js / devbar.js 不进插件包）");
+      }
+      const cssHead = fs.readFileSync(path.join(ROOT, "web", "static", "src", "styles.css"), "utf8").slice(0, 200);
+      if (cssHead.trimStart().startsWith("/*")) {
+        warn("static 资源未 minify（没找到 esbuild，构建已自动回退原样拷贝）——可选优化，装了esbuild再跑一次构建即可");
+      } else {
+        ok("static 资源已 minify");
+      }
+    }
   }
 
   /* ---------------------------------------------------- 3 打包插件 */
@@ -590,7 +605,9 @@ try {
 
     if (!fs.existsSync(reqPath)) die(`缺少 ${reqPath}`);
 
-    const pipArgs = [venvPy, "-m", "pip", "install", "--disable-pip-version-check", "-r", reqPath];
+    // --no-cache-dir：pip 的下载缓存默认落在 %LOCALAPPDATA%\pip，几百 MB 且不可再生利用，
+    // 关掉之后 venv 里只有包本体（PySide6 6.12 本体就约 670MB，缓存是纯浪费）。
+    const pipArgs = [venvPy, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", reqPath];
     if (opts.mirror) pipArgs.push("-i", opts.mirror);
 
     if (opts.dryRun) {
@@ -603,7 +620,7 @@ try {
         ok(`PySide6 已就绪（${lastLine(pyside.out)}），跳过 pip install`);
       } else {
         if (pyside.ok) info(`--force-deps：PySide6 ${lastLine(pyside.out)} 已装，仍按 requirements 重跑`);
-        else info("PySide6 还没装，开始 pip install（首次约 300MB，慢）");
+        else info("PySide6 还没装，开始 pip install（首次约 700MB，慢）");
         run(pipArgs);
 
         const after2 = probe([venvPy, "-c", "import PySide6;print(PySide6.__version__)"]);
@@ -680,6 +697,7 @@ try {
   }
   say("  2. 打开后右下角应该出现哦鲸鲸；没出现就是没加载，看 DSH 的插件日志。");
   say("  3. 想单独开着置顶窗：双击 standalone-py 下的「启动哦鲸鲸.cmd」。");
+  say("  4. 想打 Windows 分发版（绿色 exe）：node tools/build-exe.mjs。");
   say("");
   say("回滚：node tools/uninstall.mjs");
 } catch (error) {

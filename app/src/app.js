@@ -96,6 +96,20 @@
     // 滚轮改成逐帧缓动（原生在软件光栅下是一格一跳）
     bindSmoothScroll();
 
+    // 随机眨眼（仅 SVG 几何版有 .eye-open；角色头像版没有，querySelectorAll 空跑跳过。
+    // 睡着的鲸鱼不眨——scaleY 已经是闭眼状态了）
+    (function scheduleBlink() {
+      setTimeout(function () {
+        document.querySelectorAll(".whale:not(.st-sleep) .eye-open").forEach(function (eye) {
+          eye.classList.add("xj-blink");
+          setTimeout(function () {
+            eye.classList.remove("xj-blink");
+          }, 200);
+        });
+        scheduleBlink();
+      }, 3200 + Math.random() * 4200);
+    })();
+
     // §6.4 工作区 < 720 逻辑像素 → 密度模式（会话卡压成单行）
     const applyAutoDensity = () => {
       // 嵌进 DSH 时 iframe 只有浮窗那么大，不能拿 iframe 高度当工作区高度
@@ -122,6 +136,14 @@
   }
 
   /* ============================ 渲染 ============================ */
+  /* 全量重建 + 两道闸门：
+     1) 重建出来的 HTML 和上一次完全一样就不动 DOM（打字、hover 这类高频 setState
+        经常不改任何可见内容，白重建一次等于整块面板重绘一遍，还顺手把焦点和动画都重置了）；
+     2) 真的重建了，也只给「这次新出现的元素」放入场动画。以前是 CSS 里按类挂 animation，
+        于是每次重建所有会话卡、台词条都重新弹一遍——看起来像整页在闪。 */
+  let lastStageHTML = "";
+  let lastForm = "";
+  let lastLevel = "";
   function render() {
     const s = S();
     const active = document.activeElement;
@@ -159,7 +181,79 @@
     }
     // 截图提问卡：独立窗专用，和四种形态并列（它出现时窗口会长高）
     if (XJ.shot && XJ.shot.active) frag.appendChild(XJ.shot.node(s));
+
+    // 闸门 1：内容和上次一样就整个跳过。序列化几千字符是微秒级，
+    // 对比之下 replaceChildren + 样式重算 + 布局要贵得多。
+    let html = "";
+    for (let i = 0; i < frag.children.length; i++) html += frag.children[i].outerHTML;
+    if (html === lastStageHTML) {
+      renderChrome(s);
+      return;
+    }
+    lastStageHTML = html;
+
+    // 闸门 2：只给这次新出现的元素放入场动画（data-enter-key 就是它的身份）。
+    // 形态没换时，面板 / 气泡自身的 formIn 也不再重放。
+    const seen = new Set();
+    stageEl.querySelectorAll("[data-enter-key]").forEach((el) => seen.add(el.dataset.enterKey));
+    const formChanged = lastForm !== form;
+    const prevForm = lastForm;
+    lastForm = form;
+    document.documentElement.classList.toggle("xj-same-form", !formChanged);
+
+    /* 收起原来是一帧硬切：气泡/面板在 replaceChildren 里直接消失，鲸鱼球「啪」地孤零零回来。
+       这里给一条离场通道——把旧的顶层形态留在文档流里，让它的高度塌到 0 再摘掉。
+       必须留在流里，不能绝对定位叠着淡出：独立窗的尺寸是 ResizeObserver 量 #xj-stage
+       报给外壳的，只有这个盒子真的变矮，窗口才会跟着矮；绝对定位的幽灵会在 40ms 后被
+       缩小的窗口裁掉一截。也因为它留在流里，窗口是跟着一起「收回」的，不是先消失再缩。 */
+    let leaving = null;
+    let leavingH = 0;
+    if (prevForm && prevForm !== "collapsed" && form === "collapsed") {
+      leaving = stageEl.querySelector(
+        ".bubble:not(.xj-leaving), .panel:not(.xj-leaving), .quickbar:not(.xj-leaving), .form-shot:not(.xj-leaving)"
+      );
+      if (leaving) {
+        leavingH = leaving.getBoundingClientRect().height;
+        if (leavingH < 8) leaving = null;
+        else {
+          if (leaving.contains(document.activeElement)) document.activeElement.blur();
+          leaving.remove();
+        }
+      }
+    }
+
     stageEl.replaceChildren(frag);
+
+    let enterSlot = 0;
+    stageEl.querySelectorAll("[data-enter-key]").forEach((el) => {
+      const key = el.dataset.enterKey;
+      if (seen.has(key)) return;
+      // 一次入场里好几张卡同时起飞会显得「齐刷刷」，按 DOM 顺序逐条错开一点；
+      // 每条 45ms、最多推到 180ms——再长就变成肉眼可数的排队了。
+      const delay = Math.min(enterSlot++ * 45, 180);
+      if (delay) el.style.animationDelay = delay + "ms";
+      el.classList.add("xj-enter");
+      // 一次性动画：跑完就把类摘掉，别让它在下一次重建时被当成初始状态
+      el.addEventListener(
+        "animationend",
+        () => {
+          el.classList.remove("xj-enter");
+        },
+        { once: true }
+      );
+    });
+
+    // 状态等级变了：鲸鱼整块是新节点，直接换就是「啪」一下变脸（睡→干活→等你点头）。
+    // 给一个很短的缩放淡入，读起来像「换了表情」而不是「换了一张图」。
+    const level = document.body.dataset.status;
+    if (lastLevel && lastLevel !== level) {
+      const whale = stageEl.querySelector(".whale");
+      if (whale) {
+        whale.classList.add("xj-swap");
+        whale.addEventListener("animationend", () => whale.classList.remove("xj-swap"), { once: true });
+      }
+    }
+    lastLevel = level;
 
     // 焦点守恒
     if (fkey) {
@@ -176,6 +270,27 @@
     if (form === "quickbar" && !fkey) {
       const ta = stageEl.querySelector('[data-focus="composer"]');
       if (ta) ta.focus({ preventScroll: true });
+    }
+
+    // 离场通道（见上面捕获取证那段）：插回鲸鱼球上方，从量到的高度塌到 0。
+    if (leaving) {
+      leaving.classList.add("xj-leaving");
+      leaving.style.setProperty("--xj-leave-h", leavingH + "px");
+      leaving.setAttribute("aria-hidden", "true");
+      stageEl.insertBefore(leaving, stageEl.firstChild);
+      let dropped = false;
+      const drop = () => {
+        if (dropped) return;
+        dropped = true;
+        leaving.remove();
+      };
+      // 只认自己那一条：里面还有徽标翻滚、台词滑入这些短动画，
+      // animationend 会冒泡上来，不认名字的话 120ms 就被提前摘掉了。
+      leaving.addEventListener("animationend", (e) => {
+        if (e.target === leaving && e.animationName === "formLeave") drop();
+      });
+      // 兜底：动画被打断时 animationend 不会来，别让它一直挂着
+      setTimeout(drop, 400);
     }
 
     renderChrome(s);
@@ -222,6 +337,9 @@
     const st = stageEl.style;
     st.left = st.right = st.top = st.bottom = "auto";
     st.alignItems = corner === "bl" || corner === "tl" ? "flex-start" : "flex-end";
+    // 给 CSS 用：面板 / 气泡的 transform-origin 跟着吸附角走（styles.css §7），
+    // 从鲸鱼球所在的那一角「长」出来，换角落也不会变成从远处飞过来。
+    stageEl.dataset.dock = corner;
 
     // 嵌进 DSH 时 iframe 只有浮窗那么大，靠 10px 内边距容纳玻璃阴影，
     // 不模拟桌面任务栏（§4.2 的 16px / 96px 只对真桌面外壳成立）。
@@ -255,6 +373,8 @@
   function collapse() {
     const s = S();
     cancelHoverTimer();
+    delete document.body.dataset.hoverExpand;
+    delete document.body.dataset.hoverArm;
     s.ui.showOnboarding = false;
     s.ui.panelScreen = "home";
     s.ui.hotkeyRecording = null;
@@ -263,11 +383,13 @@
 
   function openPanel() {
     cancelHoverTimer();
+    delete document.body.dataset.hoverExpand;
     A().setForm("panel");
   }
 
   function openQuickbar() {
     cancelHoverTimer();
+    delete document.body.dataset.hoverExpand;
     A().setForm("quickbar");
   }
 
@@ -352,12 +474,17 @@
     if (s.settings.clickThrough) return;
     clearTimeout(hideTimer);
     clearTimeout(hoverTimer);
+    // 等待的 300ms 里先「屏一口气」（styles.css 的 orbArm）：球微微收紧，
+    // 让后面那一下绽开有前因，而不是冷不丁换掉一整块 360px 玻璃板。
+    document.body.dataset.hoverArm = "1";
     hoverTimer = setTimeout(() => {
       if (S().ui.form === "collapsed") {
         // 鼠标一移上来就甩一句台词（只在这里刷新：点击不换词）
         if (XJ.lines) S().ui.line = XJ.lines.pick(S());
-        A().setForm("bubble");
+        // 先打标记再换形态：bubbleReveal 必须在这个 .bubble 第一次算样式时就命中，
+        // 晚一帧设置会先按 formIn 起播、再被换规则打断一次（看着像抽了一下）。
         document.body.dataset.hoverExpand = "1";
+        A().setForm("bubble");
       }
     }, 300);
   }
@@ -370,6 +497,7 @@
 
   function orbHoverEnd() {
     cancelHoverTimer();
+    delete document.body.dataset.hoverArm;
     const s = S();
     if (s.ui.form !== "bubble") return;
     clearTimeout(hideTimer);
@@ -753,6 +881,7 @@
 
       case "session.completed": {
         A().sessionCompleted(p.session_id, {});
+        hopWhale(); // 未读到达：鲸鱼原地跳一下
         if (s.settings.notifyComplete) {
           XJ.ui.sysNotify({
             title: "1 个会话跑完了",
@@ -786,7 +915,19 @@
     }
   }
 
-  /** 强提醒：光环呼吸 + 提示音 + 系统通知（§6.7 分级） */
+  /** 未读到达：鲸鱼原地跳一下（一次性；animationend 摘 class，兜底 timer 防脏 class） */
+  function hopWhale() {
+    const el = document.querySelector("#xj-stage .whale");
+    if (!el || el.classList.contains("hop")) return;
+    const done = function () {
+      el.classList.remove("hop");
+    };
+    el.classList.add("hop");
+    el.addEventListener("animationend", done, { once: true });
+    setTimeout(done, 750);
+  }
+
+  /** 强提醒：光环脉冲 + 提示音 + 系统通知（§6.7 分级） */
   function loudReminder(kind) {
     const s = S();
     const level = XJ.state.reminderLevel(s, kind);

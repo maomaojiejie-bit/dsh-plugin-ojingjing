@@ -8,6 +8,62 @@
   const S = () => XJ.state.store.state;
   const A = () => XJ.state.actions;
 
+  /* ---------------- 关于 / 检查更新（接 git 仓库） ----------------
+     外壳（Qt）把 version/repo 推进 window.__XJ_SHELL__；浏览器里跑原型时用默认值。
+     检查更新打 GitHub 的 releases/latest：仓库没发过版时 API 返回 404，
+     单独提示「去仓库看动态」而不是报错。 */
+  const SHELL = window.__XJ_SHELL__ || {};
+  const REPO = SHELL.repo || "https://github.com/maomaojiejie-bit/dsh-plugin-ojingjing";
+  const RELEASES = SHELL.releases || REPO + "/releases";
+  const VERSION = String(SHELL.version || "0.3.0").replace(/^v/, "");
+
+  /** 打开外部链接：独立窗走外壳桥（系统浏览器），原型/浏览器直接 window.open */
+  function openExternal(url) {
+    if (XJ.embed && XJ.embed.enabled && XJ.embed.post) XJ.embed.post({ type: "open-url", url });
+    else window.open(url, "_blank", "noopener");
+  }
+
+  async function checkUpdate() {
+    XJ.ui.toast({ type: "info", title: "正在检查更新…", duration: 1500 });
+    try {
+      const res = await fetch("https://api.github.com/repos/maomaojiejie-bit/dsh-plugin-ojingjing/releases/latest", {
+        headers: { accept: "application/vnd.github+json" },
+      });
+      if (res.status === 404) {
+        XJ.ui.toast({
+          type: "info",
+          title: "仓库还没有发布版本",
+          sub: "最新动态在 GitHub 上",
+          actions: [{ label: "打开仓库", onClick: () => openExternal(REPO) }],
+          duration: 9000,
+        });
+        return;
+      }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const latest = String(data.tag_name || "").replace(/^v/, "");
+      if (latest && latest !== VERSION) {
+        XJ.ui.toast({
+          type: "success",
+          title: "发现新版本 v" + latest,
+          sub: "当前 v" + VERSION + " · 去 Release 页下载",
+          actions: [{ label: "去下载", onClick: () => openExternal(data.html_url || RELEASES) }],
+          duration: 14000,
+        });
+      } else {
+        XJ.ui.toast({ type: "success", title: "已是最新版本", sub: "哦鲸鲸 v" + VERSION });
+      }
+    } catch (err) {
+      XJ.ui.toast({
+        type: "warn",
+        title: "检查失败",
+        sub: "网络或 GitHub 抽风了",
+        actions: [{ label: "打开仓库", onClick: () => openExternal(REPO) }],
+        duration: 9000,
+      });
+    }
+  }
+
   /* ---------------- 通用小组件 ---------------- */
   function group(title, ...rows) {
     return h("div", { class: "set-group" }, h("div", { class: "set-group-title" }, title), ...rows);
@@ -314,8 +370,12 @@
       group(
         "其它",
         row("反馈问题", "带上脱敏日志，不包含任何对话内容", btn("打开反馈", () => XJ.app.openMainWindow())),
-        row("检查更新", "唤起客户端内更新检查", btn("检查", () => XJ.ui.toast({ type: "info", title: "已是最新版本", sub: "哦鲸鲸 v0.3 原型" }))),
-        row("关于", "哦鲸鲸 · DeepSeek Harness 悬浮窗 · v0.3 原型 · 只看状态，不看聊天内容", null)
+        row("检查更新", "当前 v" + VERSION + " · 连 GitHub 仓库比一比", btn("检查", checkUpdate)),
+        row(
+          "关于",
+          "哦鲸鲸 v" + VERSION + " · DeepSeek Harness 悬浮窗 · 只看状态，不看聊天内容",
+          btn("打开仓库", () => openExternal(REPO))
+        )
       )
     );
 

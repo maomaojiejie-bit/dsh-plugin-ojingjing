@@ -1,8 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+# 脚本路径相对 spec 文件定位（SPECPATH 由 PyInstaller 注入）：
+# 以前写死过绝对路径，仓库从「新建文件夹」搬走后 spec 就失效了。
+SCRIPT = os.path.join(SPECPATH, "standalone-py", "ojingjing_py.py")
 
 a = Analysis(
-    ['C:/Users/17897/Desktop/新建文件夹/ojingjing-widget/standalone-py/ojingjing_py.py'],
+    [SCRIPT],
     pathex=[],
     binaries=[],
     datas=[],
@@ -10,7 +15,25 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # 浮窗只 import 六个模块（QtCore/QtGui/QtWidgets/QtWebChannel/QtWebEngineCore/
+    # QtWebEngineWidgets），其余 PySide6 附加模块和用不到的 stdlib 全部排除。
+    # QtNetwork 不排：QtWebEngineCore 的 C++ 依赖会经 binaries 带进来，python 侧也别排。
+    excludes=[
+        "PySide6.Qt3DAnimation", "PySide6.Qt3DCore", "PySide6.Qt3DExtras", "PySide6.Qt3DInput",
+        "PySide6.Qt3DLogic", "PySide6.Qt3DQuick", "PySide6.Qt3DRender",
+        "PySide6.QtBluetooth", "PySide6.QtCharts", "PySide6.QtDataVisualization",
+        "PySide6.QtDBus", "PySide6.QtDesigner", "PySide6.QtGraphs", "PySide6.QtHttpServer",
+        "PySide6.QtLocation", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+        "PySide6.QtNetworkAuth", "PySide6.QtNfc", "PySide6.QtOpenGL",
+        "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtQml", "PySide6.QtQuick",
+        "PySide6.QtQuick3D", "PySide6.QtQuickControls2", "PySide6.QtQuickWidgets",
+        "PySide6.QtRemoteObjects", "PySide6.QtScxml", "PySide6.QtSensors",
+        "PySide6.QtSerialPort", "PySide6.QtSpatialAudio", "PySide6.QtSql",
+        "PySide6.QtStateMachine", "PySide6.QtTextToSpeech", "PySide6.QtUiTools",
+        "PySide6.QtWebEngineQuick", "PySide6.QtWebSockets", "PySide6.QtWebView",
+        "PySide6.QtXml",
+        "tkinter", "unittest", "pydoc", "doctest", "lib2to3",
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -24,7 +47,7 @@ exe = EXE(
     name='Ojingjing',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=False,  # bootloader 不能 strip：剥了符号表就找不到内嵌 PKG（PYI-38476）
     upx=True,
     console=False,
     disable_windowed_traceback=False,
@@ -37,7 +60,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=False,
+    strip=True,
     upx=True,
     upx_exclude=[],
     name='Ojingjing',

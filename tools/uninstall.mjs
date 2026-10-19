@@ -465,10 +465,21 @@ try {
       path.join(SHELL_DIR, "out.txt"),
       path.join(SHELL_DIR, "err.txt"),
     ];
+    // venv 建坏时的改名残骸（.venv.broken-<时间戳>），几百 MB 起
+    try {
+      for (const name of fs.readdirSync(SHELL_DIR)) {
+        if (/^\.venv\.(broken|removed)-/.test(name)) victims.push(path.join(SHELL_DIR, name));
+      }
+    } catch {
+      /* 目录不在就算了 */
+    }
+    // PyInstaller 的中间目录 + onedir 产物（一条 node tools/build-exe.mjs 就能再生）
+    victims.push(path.join(ROOT, "build"));
     const distDir = path.join(ROOT, "dist");
     if (fs.existsSync(distDir)) {
       for (const name of fs.readdirSync(distDir)) {
         if (/\.tgz$/.test(name)) victims.push(path.join(distDir, name));
+        else if (/^Ojingjing(Debug)?$/.test(name)) victims.push(path.join(distDir, name));
       }
     }
     for (const p of victims) {

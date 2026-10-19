@@ -146,7 +146,7 @@
         ...base,
         level: 3,
         expression: "focus",
-        aura: "ice",
+        aura: "blue",
         label: "正在干活",
         tone: "accent",
       };

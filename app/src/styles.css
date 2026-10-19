@@ -46,12 +46,18 @@
   --sp-5: 20px;
   --sp-6: 24px;
 
-  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --ease-in: cubic-bezier(0.4, 0, 1, 1);
-  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.2);
-  --dur-expand: 200ms;
-  --dur-collapse: 150ms;
-  --dur-state: 300ms;
+  /* 动效曲线与时长。2026-10 这一轮重做：原来的 --ease-out (0.22,0.61,0.36,1)
+     起步很猛、收尾很短，同样的 200ms 观感是「一闪就位」，也就是俗称的生硬。
+     换成 expo-out (0.16,1,0.3,1)：前 1/3 走完大半路程，剩下的时间慢慢贴合，
+     手感软，又不会拖沓。悬停 / 变色走 --ease-soft（结尾没有过冲，不会「弹」）。 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --ease-soft: cubic-bezier(0.33, 0.68, 0, 1);
+  --ease-spring: cubic-bezier(0.18, 0.92, 0.28, 1.06);
+  --dur-expand: 300ms;
+  --dur-collapse: 190ms;
+  --dur-hover: 180ms;
+  --dur-state: 340ms;
 }
 
 /* ---------- 2. Reset ---------- */
@@ -364,10 +370,21 @@ body.gl-solid .glass {
 }
 .whale.st-offline .body-grad {
   opacity: 0.42;
+  /* 灰度滤镜原本很贵：它挂在 svg 内部的 <g> 上，而鲸鱼又在内部做呼吸动画，
+     等于每一帧都要把带滤镜的这块重新光栅化。现在呼吸挪到了外层 .whale（只管 transform），
+     这一层是静止的，滤镜结果会被缓存住，只在状态切换时算一次。 */
   filter: grayscale(1);
 }
-.whale .whale-body {
+/* 呼吸挂在 .whale 上，不再挂在 svg 内部的 .whale-body：
+   给 <svg> 内部的图形元素加动画，Chromium 不会把它提成合成层，
+   每帧都得把这块 SVG 重新光栅化（软件光栅下最贵的就是这个）。
+   动外层容器走的是 composite-only 的 transform。
+   角色皮肤（.whale-av）自己有 avFloat，别叠加两套呼吸。 */
+.whale:not(.whale-av) {
   animation: whaleBreath 4.2s var(--ease-out) infinite;
+  will-change: transform;
+}
+.whale {
   transform-origin: 50% 62%;
 }
 
@@ -444,10 +461,67 @@ body.gl-solid .glass {
 }
 .aura.aura-amber {
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.75), 0 0 20px 3px rgba(251, 191, 36, 0.3);
-  animation: auraBreath 3.4s ease-in-out infinite;
+}
+/* 待确认：外圈再套一层琥珀脉冲环（transform 缩放，不动 box-shadow） */
+.aura.aura-amber::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(251, 191, 36, 0.55);
+  animation: auraPulse 1.7s var(--ease-out) infinite;
+  will-change: transform, opacity;
+}
+@keyframes auraPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+  35% {
+    transform: scale(1.1);
+    opacity: 0.8;
+  }
+  70% {
+    transform: scale(1.22);
+    opacity: 0;
+  }
+}
+/* 工作中：蓝色流转环（conic + mask 做圆环，旋转只动 transform） */
+.aura.aura-blue {
+  box-shadow: 0 0 0 2px rgba(124, 194, 255, 0.55), 0 0 18px 2px rgba(124, 194, 255, 0.35);
+}
+.aura.aura-blue::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(124, 194, 255, 0) 62%, rgba(124, 194, 255, 0.9) 90%, rgba(124, 194, 255, 0));
+  -webkit-mask-image: radial-gradient(circle, transparent 58%, #000 62%);
+  mask-image: radial-gradient(circle, transparent 58%, #000 62%);
+  animation: auraSpin 3.2s linear infinite;
+  will-change: transform;
+}
+@keyframes auraSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .aura.aura-green {
   box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.6), 0 0 16px 2px rgba(52, 211, 153, 0.28);
+}
+/* 未读到达：翠绿光环轻闪两下然后稳住（一次性，不无限循环） */
+.aura.aura-green.show {
+  animation: auraFlash 1.6s var(--ease-out) 2;
+}
+@keyframes auraFlash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 .aura.aura-gray {
   /* §8.1 离线：整体灰度 + 光环转虚线 */
@@ -460,31 +534,128 @@ body.gl-solid .glass {
     transform: rotate(360deg);
   }
 }
-/* 呼吸只动 opacity，不动 box-shadow 的模糊半径：
-   分层窗口上每帧重算阴影会整面重绘，在部分显卡上看起来像「闪」。 */
-@keyframes auraBreath {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-  }
-}
 
 /* ---------- 7. 形态一：收起态（64px 圆） ---------- */
+/* 形态切换动画只给「同一个形态」用，别放 .form 上：
+   .form 包着整个窗口的内容，app.js 每次 render 都重建这块 DOM，入场动画就会被反复重放——
+   最显眼的表现是「打字时每按一下面板都往上窜一下」。收起→面板→气泡→输入条之间
+   本来就是换了一个 .form 元素，各自的选择器下面挂动画即可。 */
 .form {
-  transform-origin: 100% 100%;
-  animation: formIn var(--dur-expand) var(--ease-out);
+  transform-origin: var(--xj-grow, 100% 100%);
 }
+/* 展开方向跟着鲸鱼球的吸附角走：app.js applyDock 把当前角落写进 #xj-stage[data-dock]，
+   这里翻成 transform-origin，面板就从鲸鱼那一侧「长」出来。
+   原来写死 100% 100%，右下角吸附时是对的，一换到左上角就变成「从远处飞过来」。
+   --xj-lift 是入场的落差方向：贴着底边的从下方升起，贴着顶边的从上方落下。 */
+#xj-stage[data-dock="br"] {
+  --xj-grow: 100% 100%;
+  --xj-lift: 12px;
+  --xj-orb: calc(100% - 32px) calc(100% - 32px);
+}
+#xj-stage[data-dock="bl"] {
+  --xj-grow: 0% 100%;
+  --xj-lift: 12px;
+  --xj-orb: 32px calc(100% - 32px);
+}
+#xj-stage[data-dock="tr"] {
+  --xj-grow: 100% 0%;
+  --xj-lift: -12px;
+  --xj-orb: calc(100% - 32px) 32px;
+}
+#xj-stage[data-dock="tl"] {
+  --xj-grow: 0% 0%;
+  --xj-lift: -12px;
+  --xj-orb: 32px 32px;
+}
+.panel,
+.bubble,
+.quickbar,
+.form-shot,
+.form-collapsed {
+  transform-origin: var(--xj-grow, 100% 100%);
+  /* both：入场前先停在 from 帧，不然带 animation-delay 的元素会「先露原样再跳回去」 */
+  animation: formIn var(--dur-expand) var(--ease-out) both;
+  will-change: transform, opacity;
+}
+/* 形态没换（只是内容变了）时不要重放形态动画：
+   app.js 每次 render 都是全量重建，同一个 .panel 每次都是「新节点」，
+   不拦一下就是「每改一个字整块面板往上窜一下」。 */
+html.xj-same-form .panel,
+html.xj-same-form .bubble,
+html.xj-same-form .quickbar,
+html.xj-same-form .form-collapsed,
+html.xj-same-form .form-shot {
+  animation: none;
+  will-change: auto;
+}
+/* 只写 from，终点用元素自己的样式。位移方向跟着吸附角（见 --xj-grow）：
+   0.88 的起点 + 12px 落差，在 expo 收尾下前 100ms 就走完大半，剩下 200ms 慢慢贴合——
+   观感是「从鲸鱼那边长出来然后落定」，而不是「一闪就位」。 */
 @keyframes formIn {
   from {
     opacity: 0;
-    transform: scale(0.96) translateY(6px);
+    transform: scale(0.88) translateY(var(--xj-lift, 12px));
+  }
+}
+/* 悬停展开单独一条曲线。
+   鼠标停在鲸鱼上等 300ms 才长出来，这一下最容易被读成「砰」：
+   formIn 用的是 expo-out，前 10% 时间就走掉一半行程——那适合「点了就得立刻响应」，
+   不适合「手没动、我等了一会儿它自己长出来」。等待期间注意力一直钉在球上，
+   一眨眼换成 360px 大玻璃板，落差全砸在眼睛上。
+   所以悬停这一路单独改成：
+     1) 420ms，曲线「先慢慢松开、再加速铺开、最后贴住」（慢起步是关键）；
+     2) 起点 0.78（比 0.88 小得多），读起来是「从球里绽开」而不是「弹一下」；
+     3) transform-origin 挪到球心（离角 32px），不从容器尖角缩放。
+   标记由 app.js 的 orbHoverStart 挂到 body 上。 */
+body[data-hover-expand="1"] .bubble {
+  transform-origin: var(--xj-orb, 100% 100%);
+  animation: bubbleReveal 420ms cubic-bezier(0.34, 0.05, 0.22, 1) both;
+}
+@keyframes bubbleReveal {
+  from {
+    opacity: 0;
+    transform: scale(0.78) translateY(var(--xj-lift, 12px));
+  }
+  55% {
+    opacity: 1;
+  }
+}
+/* 等待期间先「屏一口气」：0.962 的收紧很小，但绽开前先让人读到「它反应了」。 */
+body[data-hover-arm="1"] .orb:not(.dragging) {
+  animation: orbArm 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes orbArm {
+  0% {
+    transform: translateY(-1px) scale(1.03);
+  }
+  70% {
+    transform: translateY(-1px) scale(0.962);
+  }
+  100% {
+    transform: translateY(-1px) scale(0.985);
+  }
+}
+/* 收起：旧的顶层形态先塌高度再摘掉（app.js render 里的离场通道）。
+   留在文档流里是硬要求，理由见 app.js 那段注释：只有 #xj-stage 真的变矮，
+   ResizeObserver 报出去的尺寸才会变，独立窗才会跟着一起收回去。
+   margin-bottom 收到 -12px 是为了抵掉 .stage 的 gap——不然盒子塌到 0 之后
+   还剩 12px 空隙，摘掉的那一刻会跳一下。 */
+.stage .form.xj-leaving {
+  overflow: hidden;
+  pointer-events: none;
+  animation: formLeave 200ms var(--ease-out) forwards;
+}
+@keyframes formLeave {
+  from {
+    opacity: 1;
+    height: var(--xj-leave-h, 80px);
+    transform: none;
   }
   to {
-    opacity: 1;
-    transform: none;
+    opacity: 0;
+    height: 0;
+    margin-bottom: -12px;
+    transform: translateY(var(--xj-lift, 12px)) scale(0.985);
   }
 }
 .orb {
@@ -497,13 +668,29 @@ body.gl-solid .glass {
   box-shadow: var(--shadow-l3), inset 0 1px 0 rgba(255, 255, 255, 0.14);
   display: grid;
   place-items: center;
-  transition: transform 140ms var(--ease-out), box-shadow 200ms var(--ease-out);
+  transition: transform var(--dur-hover) var(--ease-soft);
   cursor: grab;
   user-select: none;
 }
+/* 悬停辉光独立成层、只过渡 opacity：box-shadow 是绘制属性，过渡它意味着
+   分层透明窗口里每一帧都要把整个球重绘一遍（观感是「闪」不是「亮」）。
+   底层的常驻投影留在 .orb 本体上不动，只有辉光这一层谈淡出入。 */
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 24px -4px rgba(124, 194, 255, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out);
+  pointer-events: none;
+  will-change: opacity;
+}
 .orb:hover {
   transform: translateY(-1px) scale(1.03);
-  box-shadow: var(--shadow-l3), 0 0 24px -4px rgba(124, 194, 255, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.orb:hover::after {
+  opacity: 1;
 }
 .orb:active {
   cursor: grabbing;
@@ -695,6 +882,10 @@ body.gl-solid .glass {
   background: rgba(124, 194, 255, 0.1);
   border: 1px solid rgba(124, 194, 255, 0.18);
   border-left: 2px solid var(--accent);
+}
+/* 入场动画只在新台词出现时放（app.js 比对 data-enter-key）：
+   以前直接挂在类上，于是重建一次就把同一句话再弹一次，看着像在抽搐。 */
+.bubble-line.xj-enter {
   animation: lineIn 200ms var(--ease-out) both;
 }
 .bubble-line .line-text {
@@ -746,7 +937,7 @@ body.gl-solid .glass {
   display: grid;
   place-items: center;
   color: var(--text-secondary);
-  transition: background 140ms var(--ease-out), color 140ms var(--ease-out);
+  transition: background var(--dur-hover) var(--ease-soft), color var(--dur-hover) var(--ease-soft);
   flex: none;
 }
 .icon-btn:hover {
@@ -773,7 +964,7 @@ body.gl-solid .glass {
   padding: 9px 8px;
   margin: 1px 0;
   border-radius: var(--radius-card);
-  transition: background 140ms var(--ease-out);
+  transition: background var(--dur-hover) var(--ease-soft);
   cursor: pointer;
   position: relative;
 }
@@ -862,7 +1053,7 @@ body.gl-solid .glass {
   color: var(--text-secondary);
   padding: 4px 6px;
   border-radius: 8px;
-  transition: color 140ms var(--ease-out), background 140ms var(--ease-out);
+  transition: color var(--dur-hover) var(--ease-soft), background var(--dur-hover) var(--ease-soft);
   white-space: nowrap;
 }
 .btn-link:hover {
@@ -886,7 +1077,7 @@ body.gl-solid .glass {
   font-size: var(--fs-body);
   font-weight: 600;
   box-shadow: 0 4px 14px -4px rgba(124, 194, 255, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  transition: transform 100ms var(--ease-out), filter 140ms var(--ease-out);
+  transition: transform 120ms var(--ease-soft), filter var(--dur-hover) var(--ease-soft);
 }
 .btn-solid:hover {
   filter: brightness(1.06);
@@ -912,7 +1103,7 @@ body.gl-solid .glass {
   font-weight: 500;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.16);
-  transition: background 140ms var(--ease-out), transform 100ms var(--ease-out);
+  transition: background var(--dur-hover) var(--ease-soft), transform 120ms var(--ease-soft);
 }
 .btn-ghost:hover {
   background: rgba(255, 255, 255, 0.11);
@@ -1032,7 +1223,7 @@ body.gl-solid .glass {
   background: linear-gradient(180deg, var(--accent-soft), var(--accent));
   color: #0c1a2b;
   box-shadow: 0 4px 12px -4px rgba(124, 194, 255, 0.6);
-  transition: transform 100ms var(--ease-out);
+  transition: transform 120ms var(--ease-soft);
 }
 .qb-send:active {
   transform: scale(0.94);
@@ -1076,7 +1267,6 @@ body.gl-solid .glass {
   flex-direction: column;
   overflow: hidden;
   animation: formIn var(--dur-expand) var(--ease-out);
-  transition: height var(--dur-expand) var(--ease-out);
 }
 .panel.h480 {
   height: 480px;
@@ -1136,7 +1326,7 @@ body.gl-solid .glass {
   gap: 5px;
   color: var(--text-secondary);
   font-size: 11px;
-  transition: background 140ms var(--ease-out), border-color 140ms var(--ease-out), transform 100ms var(--ease-out);
+  transition: background var(--dur-hover) var(--ease-soft), border-color var(--dur-hover) var(--ease-soft), transform 120ms var(--ease-soft);
   position: relative;
 }
 .qa:hover {
@@ -1215,11 +1405,19 @@ body.gl-solid .glass {
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 11px 12px;
   margin-bottom: 8px;
-  transition: background 140ms var(--ease-out), border-color 140ms var(--ease-out);
+  transition: background var(--dur-hover) var(--ease-soft), border-color var(--dur-hover) var(--ease-soft),
+    transform var(--dur-hover) var(--ease-soft), box-shadow var(--dur-hover) var(--ease-soft);
   position: relative;
 }
 .sess-card:hover {
   background: rgba(255, 255, 255, 0.075);
+  /* 一像素的抬升 + 一层很淡的投影：卡片「浮起来」比只换背景色更像真的被手指碰到 */
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -10px rgba(0, 0, 0, 0.75);
+}
+/* 只有新会话卡才弹（app.js 按 data-enter-key 判定）；老卡在重建时不重放动画 */
+.sess-card.xj-enter {
+  animation: cardIn var(--dur-state) var(--ease-out) both;
 }
 .sess-card.is-active {
   border-color: rgba(124, 194, 255, 0.28);
@@ -1258,9 +1456,31 @@ body.gl-solid .glass {
 .progress > i {
   display: block;
   height: 100%;
+  width: 100%;
   border-radius: 2px;
   background: linear-gradient(90deg, rgba(124, 194, 255, 0.65), var(--accent-soft));
-  transition: width 500ms var(--ease-out);
+  transform-origin: left center;
+  transition: transform 500ms var(--ease-out);
+  position: relative;
+  overflow: hidden;
+}
+/* 工作中：进度条上一道流光（transform 驱动，不碰 layout） */
+.sess-card.working .progress:not(.done) > i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: progShine 1.7s linear infinite;
+  will-change: transform;
+}
+@keyframes progShine {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
 }
 .progress.done > i {
   background: linear-gradient(90deg, rgba(52, 211, 153, 0.6), var(--success));
@@ -1306,16 +1526,20 @@ body.gl-solid .glass {
   box-shadow: 0 6px 22px -10px rgba(251, 191, 36, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   padding: 12px;
   margin-bottom: 8px;
-  animation: cardIn 200ms var(--ease-out);
 }
+/* 审批卡是新来的才弹一下（data-enter-key），不是每次重建都弹 */
+.approval-card.xj-enter {
+  animation: cardIn var(--dur-state) var(--ease-out) both;
+}
+/* 从上方落位 + 轻微放大：单纯位移在 200ms 里显得「跳」，带上 scale 才有落定的重量 */
 @keyframes cardIn {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateY(-10px) scale(0.98);
   }
 }
 .approval-card.leaving {
-  animation: cardOut 200ms var(--ease-out) forwards;
+  animation: cardOut var(--dur-collapse) var(--ease-out) forwards;
 }
 @keyframes cardOut {
   to {
@@ -1693,14 +1917,14 @@ body.gl-solid .glass {
   display: flex;
   flex-direction: column;
   z-index: 5;
-  animation: sheetIn 200ms var(--ease-out);
+  animation: sheetIn var(--dur-expand) var(--ease-out) both;
   border-radius: inherit;
   overflow: hidden;
 }
 @keyframes sheetIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(16px);
   }
 }
 .sheet-head {
@@ -1739,7 +1963,7 @@ body.gl-solid .glass {
   gap: 12px;
   padding: 10px 10px;
   border-radius: 10px;
-  transition: background 140ms var(--ease-out);
+  transition: background var(--dur-hover) var(--ease-soft);
 }
 .set-row:hover {
   background: rgba(255, 255, 255, 0.05);
@@ -1879,7 +2103,7 @@ input[type="time"].select-mini {
   display: flex;
   flex-direction: column;
   padding: 26px 24px 20px;
-  animation: sheetIn 240ms var(--ease-out);
+  animation: sheetIn var(--dur-expand) var(--ease-out) both;
 }
 .ob-step {
   flex: 1;
@@ -2137,7 +2361,7 @@ input[type="time"].select-mini {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  animation: toastIn 220ms var(--ease-out);
+  animation: toastIn 260ms var(--ease-soft);
   pointer-events: auto;
 }
 .toast.leaving {
@@ -2214,7 +2438,7 @@ input[type="time"].select-mini {
   backdrop-filter: blur(24px);
   padding: 12px 14px;
   z-index: 85;
-  animation: toastIn 260ms var(--ease-out);
+  animation: toastIn 300ms var(--ease-soft);
 }
 .sys-notify.leaving {
   animation: toastOut 200ms var(--ease-out) forwards;
@@ -2338,7 +2562,7 @@ input[type="time"].select-mini {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: sheetIn 180ms var(--ease-out);
+  animation: sheetIn var(--dur-collapse) var(--ease-out) both;
 }
 .log-head {
   display: flex;
@@ -2399,12 +2623,18 @@ body.reduce-motion *::after {
     transition-duration: 0.001ms !important;
   }
 }
-/* 静态帧模式：窗口不可见/被完全遮挡/静音/省电（§6.2） */
+/* 静态帧模式：窗口不可见/被完全遮挡/静音/省电（§6.2）。
+   清单要跟着动画走——呼吸挪到 .whale 容器、光环环挪到 ::before、加了头像浮动和
+   进度流光之后，老的「只杀 svg 子元素」清单会漏掉这几个，窗口藏着的时候白烧 CPU。 */
+body.static-frame .whale,
 body.static-frame .whale *,
-body.static-frame .aura.amber {
+body.static-frame .whale-av,
+body.static-frame .aura,
+body.static-frame .aura::before,
+body.static-frame .sess-card.working .progress:not(.done) > i::after {
   animation: none !important;
 }
-body.static-frame .aura.amber {
+body.static-frame .aura-amber {
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.85);
 }
 
@@ -2429,7 +2659,7 @@ body.static-frame .aura.amber {
 
 /* ---------- 17. 截图：选区交互 + 发送卡（§9.2.4） ---------- */
 .capture-layer {
-  animation: fadeIn 140ms var(--ease-out);
+  animation: fadeIn var(--dur-hover) var(--ease-soft);
 }
 .capture-layer.leaving {
   animation: fadeOut 150ms var(--ease-in) forwards;
@@ -2462,7 +2692,7 @@ body.static-frame .aura.amber {
   backdrop-filter: blur(24px) saturate(160%);
   cursor: default;
   z-index: 93;
-  animation: cardPop 200ms var(--ease-spring);
+  animation: cardPop 280ms var(--ease-spring);
 }
 @keyframes cardPop {
   from {
@@ -2997,22 +3227,34 @@ html.xj-sw *::after {
   -webkit-backdrop-filter: none !important;
 }
 
+html.xj-sw .whale,
 html.xj-sw .whale .whale-body,
 html.xj-sw .whale .zzz,
 html.xj-sw .whale .spout,
 html.xj-sw .whale .bang,
 html.xj-sw .whale .stars,
 html.xj-sw .whale.st-offline .eye-offline,
-html.xj-sw .aura {
+html.xj-sw .whale-av,
+html.xj-sw .aura::before,
+html.xj-sw .sess-card.working .progress:not(.done) > i::after {
   animation: none !important;
+  will-change: auto;
 }
 
-/* 拿掉模糊后玻璃会变透，补一层底色，白字对比度保持不变 */
+/* 软件光栅里去掉子像素抗锯齿：透明窗口上的文字本来就不在真实背景上，
+   开着次像素（LCD）抗锯齿，每次合成都要按背景重算一遍字色，代价比清晰度收益大。 */
+html.xj-sw,
+html.xj-sw body {
+  -webkit-font-smoothing: antialiased;
+}
+/* 拿掉模糊后玻璃会变透，补一层底色，白字对比度保持不变。
+   用 94% 而不是 88%：逐像素透明的窗口里，半透明的大面积叠层每帧都要重混一次。
+   软件模式本来就没有背景模糊，叠得更实一点不影响观感，反而更好看清字。 */
 html.xj-sw .glass,
 html.xj-sw .bubble,
 html.xj-sw .panel,
 html.xj-sw .quickbar {
-  background-color: rgba(16, 23, 38, 0.88);
+  background-color: rgba(13, 19, 32, 0.94);
 }
 
 /* ============================================================
@@ -3044,19 +3286,33 @@ html.xj-sw .quickbar {
   background: linear-gradient(to bottom, rgba(16, 23, 38, 0), rgba(16, 23, 38, 0.86));
   pointer-events: none;
 }
+/* 收起态（鲸鱼球）和截图卡的入场交给下面 §7 的共享规则 + html.xj-same-form 闸门，
+   这里不再单独调成 animation:none，否则从面板收回鲸鱼球时它是硬弹出来的。 */
 /* 转圈图标在做「会话工作中」时一直转：给它独立层，滚动时它自己重画，列表不用跟着重画 */
 .spinner {
+  will-change: transform;
+}
+/* 鲸鱼一直在呼吸：提前提成合成层，别让浏览器在每帧动画里临时决定 */
+.whale,
+.whale-av,
+.aura::before,
+.sess-card.working .progress:not(.done) > i::after {
   will-change: transform;
 }
 /* 滚轮一动就挂上 .xj-scrolling（app.js bindScrollBoost），松手 160ms 后摘掉：
    这段时间里转圈、呼吸、hover 过渡全部停住——它们和滚动抢的是同几帧。 */
 html.xj-scrolling .spinner,
 html.xj-scrolling .aura,
+html.xj-scrolling .aura::before,
+html.xj-scrolling .whale,
 html.xj-scrolling .whale .whale-body,
+html.xj-scrolling .whale-av,
+html.xj-scrolling .whale .eye-open,
 html.xj-scrolling .whale .zzz,
 html.xj-scrolling .whale .spout,
 html.xj-scrolling .whale .bang,
 html.xj-scrolling .whale .stars,
+html.xj-scrolling .sess-card.working .progress:not(.done) > i::after,
 html.xj-scrolling .toast {
   animation-play-state: paused !important;
 }
@@ -3066,4 +3322,160 @@ html.xj-scrolling .row,
 html.xj-scrolling .qa,
 html.xj-scrolling .sess-card:hover {
   transition: none !important;
+}
+
+/* ============================================================
+   23. 动画增强（2026-10-19）
+   原则不变：只动 transform / opacity（合成器属性）；每个新动画
+   都必须同时登记进 §21 的 xj-sw 关闭清单和 §22 的滚动暂停清单。
+   ============================================================ */
+
+/* ---- 鲸鱼：未读到达时原地跳一下（一次性，JS 加 class、animationend 摘） ---- */
+/* 弹跳的起伏已经写在关键帧里了，缓动就别再用 spring：
+   每段关键帧各套一次过冲曲线，接缝处会「一顿一顿」的，反而更硬。 */
+.whale.hop {
+  animation: whaleHop 640ms var(--ease-soft);
+}
+@keyframes whaleHop {
+  0% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-8px) scale(1.03);
+  }
+  55% {
+    transform: translateY(1px);
+  }
+  75% {
+    transform: translateY(-3px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* ---- 鲸鱼：状态等级变化（睡 ↔ 干活 ↔ 等你点头）时换表情的过渡 ---- */
+/* 全量重建下表情是「换了一张新图」，直接切就是啪一下变脸；
+   0.94 → 1 的缩放配上半程淡入，像表情在动。 */
+.whale.xj-swap {
+  animation: whaleSwap 340ms var(--ease-soft);
+}
+@keyframes whaleSwap {
+  from {
+    opacity: 0.4;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- 鲸鱼：角色皮肤（img 版）没有 SVG 呼吸，补一层待机浮动 ---- */
+.whale-av {
+  animation: avFloat 5.6s var(--ease-out) infinite;
+  will-change: transform;
+}
+@keyframes avFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.6px);
+  }
+}
+
+/* ---- 鲸鱼：随机眨眼（仅 SVG 几何版有 .eye-open；JS 随机触发） ---- */
+.whale .eye-open.xj-blink {
+  animation: eyeBlink 150ms var(--ease-out);
+}
+@keyframes eyeBlink {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.1);
+  }
+}
+
+/* ---- 审批卡：决定反馈 ---- */
+.approval-card {
+  position: relative; /* 印章定位用 */
+}
+/* 正在处理：按决定方向 dim 一下，等 harness 回包后卡片被移除 */
+.approval-card.deciding-allow .appr-top,
+.approval-card.deciding-allow .cmd-box,
+.approval-card.deciding-allow .appr-actions,
+.approval-card.deciding-deny .appr-top,
+.approval-card.deciding-deny .cmd-box,
+.approval-card.deciding-deny .appr-actions {
+  opacity: 0.45;
+  transition: opacity var(--dur-state) var(--ease-out);
+}
+/* 通过 / 拒绝印章：从右侧弹入，停在卡片右上角 */
+.appr-stamp {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-badge);
+  font-weight: 600;
+  opacity: 0;
+  transform: scale(0.5) rotate(-14deg);
+  pointer-events: none;
+}
+.appr-stamp-allow {
+  color: #052e21;
+  background: var(--success);
+  box-shadow: 0 2px 10px -2px rgba(52, 211, 153, 0.6);
+}
+.appr-stamp-deny {
+  color: #2a0a0a;
+  background: var(--error);
+  box-shadow: 0 2px 10px -2px rgba(248, 113, 113, 0.6);
+}
+.approval-card.deciding-allow .appr-stamp-allow,
+.approval-card.deciding-deny .appr-stamp-deny {
+  animation: stampIn 340ms var(--ease-spring) forwards;
+}
+@keyframes stampIn {
+  to {
+    opacity: 0.92;
+    transform: scale(1) rotate(-6deg);
+  }
+}
+/* 点「拒绝」进入二次确认：卡片左右摆一下，提醒这一步会中断任务 */
+.approval-card.deny-warn {
+  animation: cardShake 280ms var(--ease-out);
+}
+@keyframes cardShake {
+  20% {
+    transform: translateX(-4px);
+  }
+  45% {
+    transform: translateX(4px);
+  }
+  70% {
+    transform: translateX(-2px);
+  }
+  90% {
+    transform: translateX(2px);
+  }
+}
+
+/* ---- Toast：入场时图标弹一下 ---- */
+.toast .icon {
+  animation: toastPop 320ms var(--ease-spring);
+}
+@keyframes toastPop {
+  from {
+    transform: scale(0.3);
+    opacity: 0;
+  }
 }

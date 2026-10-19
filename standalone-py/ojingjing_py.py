@@ -88,6 +88,26 @@ ICON_CANDIDATES = [BASE.parent / "web" / "icon.png"]  # 只保留角色图标；
 
 TITLE = "哦鲸鲸"
 
+# 仓库与版本：设置页「关于 / 检查更新」用。
+# 版本号优先读仓库根的 package.json（源码运行），分发版（PyInstaller）里没有这个文件，
+# 用下面的常量兜底——发版时记得同步 bump。
+REPO_URL = "https://github.com/maomaojiejie-bit/dsh-plugin-ojingjing"
+RELEASES_URL = REPO_URL + "/releases"
+VERSION_FALLBACK = "0.3.0"
+
+
+def shell_version() -> str:
+    """当前版本：package.json → 常量兜底。"""
+    for cand in (BASE.parent / "package.json", BASE / "package.json"):
+        try:
+            text = cand.read_text(encoding="utf-8")
+            ver = str(json.loads(text).get("version") or "").strip()
+            if ver:
+                return ver
+        except Exception:  # noqa: BLE001
+            continue
+    return VERSION_FALLBACK
+
 # QtWebEngine 两条渲染路径：
 #   软件（默认）：ANGLE + WARP 软件光栅 + 关 GPU 合成。逐像素透明的分层窗口能正常显示；
 #                代价是透明窗口上的模糊/动画吃 CPU —— 页面侧靠 html.xj-sw 减负。
@@ -843,8 +863,8 @@ def short_title(session_id: str) -> str:
 
 
 def main() -> None:
-    from PySide6.QtCore import (QBuffer, QFile, QIODevice, QPoint, QRect, Qt, QTimer, Signal, QObject, Slot)
-    from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap
+    from PySide6.QtCore import (QBuffer, QFile, QIODevice, QPoint, QRect, Qt, QTimer, QUrl, Signal, QObject, Slot)
+    from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QKeySequenceEdit,
                                    QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSlider, QSpinBox,
@@ -923,6 +943,20 @@ def main() -> None:
         def quit(self) -> None:
             self.overlay.request_exit()
 
+        @Slot(str)
+        def open_url(self, url: str) -> None:
+            """打开外部链接（设置页「关于 / 检查更新」用）。
+            只放行 https：别的 scheme（file://、javascript: 之类）一律不接。"""
+            try:
+                u = str(url or "").strip()
+                if not u.startswith("https://"):
+                    log(f"open-url: 拒绝非 https 链接 {u!r}")
+                    return
+                QDesktopServices.openUrl(QUrl(u))
+                log(f"open-url: {u}")
+            except Exception as exc:  # noqa: BLE001
+                log(f"打开链接失败：{exc}")
+
         @Slot()
         def capture(self) -> None:
             self.overlay.capture()
@@ -934,6 +968,9 @@ def main() -> None:
                 "render": str(settings().get("render") or "auto"),
                 "active": "hw" if HW_GL else "sw",
                 "pref": RENDER_PREF,
+                "version": shell_version(),
+                "repo": REPO_URL,
+                "releases": RELEASES_URL,
             }
             try:
                 self.overlay.view.page().runJavaScript(

@@ -6,11 +6,16 @@ dist/
 
 # ---- 独立窗运行期状态 ----
 standalone-py/.venv/
+standalone-py/.venv.broken-*/
 standalone-py/data/
 standalone-py/__pycache__/
 standalone-py/out.txt
 standalone-py/err.txt
 standalone-py/*.log
+
+# ---- PyInstaller 一次性验证产物（正式打包走 Ojingjing.spec，输出在 dist/） ----
+dist-poc/
+build-poc/
 
 # ---- 本地调试截图（评审图在 docs/screenshots/） ----
 .shots/

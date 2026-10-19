@@ -32,6 +32,11 @@
     const native = window.xjNative || (window.pywebview && window.pywebview.api);
     if (HOST === "py" && native) {
       try {
+        // 打开外部链接（关于 / 检查更新）：交给外壳用系统浏览器开，只放行 https
+        if (message.type === "open-url" && native.open_url) {
+          native.open_url(message.url);
+          return;
+        }
         if (message.type === "resize" && native.resize) native.resize(message.w, message.h);
         else if (message.type === "drag" && native.drag) native.drag();
         else if (message.type === "open-dsh" && native.open_dsh) native.open_dsh();
@@ -52,6 +57,12 @@
 
   document.documentElement.classList.add("xj-embed");
   document.addEventListener("DOMContentLoaded", () => document.body.classList.add("embed"));
+
+  /* XJ.mock 命名空间兜底：原型态由 mock.js 提供 { Harness, SAMPLES, seedSessions }，
+     但插件/独立窗的 web/app.html 不打包 mock.js（构建期剥离，见 build-plugin.mjs）。
+     app.js 启动时执行 XJ.mock.harness = __XJ_EMBED_HARNESS__ || new XJ.mock.Harness()，
+     embed 态左操作数恒真、永远不碰 Harness，所以这里只要有个对象挂着就行。 */
+  XJ.mock = XJ.mock || {};
 
   /* ------------------------ 尺寸上报 ------------------------ */
   // 用元素自身尺寸（offsetWidth/Height）而不是 getBoundingClientRect：

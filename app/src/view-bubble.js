@@ -163,7 +163,12 @@
     const lineNode = line
       ? h(
           "div",
-          { class: "bubble-line line-" + line.ctx, role: "note", "aria-live": "polite" },
+          {
+            class: "bubble-line line-" + line.ctx,
+            role: "note",
+            "aria-live": "polite",
+            dataset: { enterKey: "line:" + line.text },
+          },
           h("span", { class: "line-text" }, line.text)
         )
       : null;

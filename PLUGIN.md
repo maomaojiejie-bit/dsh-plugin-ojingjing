@@ -21,7 +21,7 @@ web/app.html          # 由 tools/build-plugin.mjs 从 app/index.html 生成
 web/embed.js          # iframe 内：XJ.embed + 真数据 Harness（/xj/state、/xj/decide、/xj/prompt）
 web/embed.css         # 嵌入态样式（透明底、隐藏演示桌面/原型控制台/输入区）
 web/inject.js         # 页面内注入版用（默认关闭 INJECT_IN_PAGE=false）
-web/static/src/**     # 原型源码副本（构建产物，来自 app/src/）
+web/static/src/**     # 原型源码副本（构建产物，来自 app/src/；esbuild minify + 剥离 mock/devbar）
 LICENSE               # 随包发布（MIT）
 ```
 
@@ -71,9 +71,15 @@ node tools\test-shell-launch.mjs
 ## 一、构建
 
 ```powershell
-cd C:\Users\17897\Desktop\新建文件夹\ojingjing-widget
-node tools\build-plugin.mjs      # 重新生成 web/app.html + web/static/src
+cd C:\Users\17897\Desktop\new\ojingjing-widget
+node tools\build-plugin.mjs      # 重新生成 web/app.html + web/static/src（minify + 剥离 mock/devbar）
+node tools\build-exe.mjs         # 打 Windows 分发版：PyInstaller onedir + 裁语言包 → dist/Ojingjing（约 425MB）
 ```
+
+`build-plugin.mjs` 的 minify 走 esbuild（可选依赖，装在受管 node workspace：
+`cd %USERPROFILE%\.workbuddy\binaries\node\workspace && npm install esbuild`），找不到就原样拷贝。
+`build-exe.mjs` 会自动挑解释器（venv python 优先，坏了退回系统 Python + PYTHONPATH），
+PyInstaller 没装会先自动补。
 
 ## 二、安装
 
