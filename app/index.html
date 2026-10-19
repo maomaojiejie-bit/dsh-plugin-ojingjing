@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>哦鲸鲸 · DSH 悬浮窗小组件（M2 可点击原型）</title>
+
+    <!-- 字体不打包：运行时加载 + 缓存，离线回落到 Microsoft YaHei UI（§7.2） -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="src/styles.css" />
+
+    <!-- 原型自检：任何脚本异常都直接显示出来（评审时能看见，而不是白屏） -->
+    <script>
+      window.__xjErrors = [];
+      window.addEventListener("error", function (e) {
+        window.__xjErrors.push(String(e.message));
+        var box = document.getElementById("xj-boot-error") || document.createElement("div");
+        box.id = "xj-boot-error";
+        box.style.cssText =
+          "position:fixed;left:12px;top:12px;z-index:999;max-width:70vw;padding:10px 12px;border-radius:10px;" +
+          "background:rgba(248,113,113,.16);border:1px solid rgba(248,113,113,.6);color:#ffd9d9;" +
+          "font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap";
+        box.textContent = "脚本异常：\n" + window.__xjErrors.join("\n");
+        document.body && document.body.appendChild(box);
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        window.__xjErrors.push("Promise: " + (e.reason && (e.reason.stack || e.reason.message || e.reason)));
+      });
+    </script>
+  </head>
+  <body>
+    <!-- ============ 演示桌面（模拟 Windows 工作区，仅原型用） ============ -->
+    <div class="desktop" aria-hidden="true">
+      <div class="mock-main">
+        <div class="mock-titlebar">
+          <div class="traffic"><i></i><i></i><i></i></div>
+          <span>DeepSeek Harness · 主窗口</span>
+        </div>
+        <div class="mock-body">
+          <div>
+            <div class="mock-line w45"></div>
+            <div class="mock-line w90"></div>
+            <div class="mock-line w70"></div>
+            <div class="mock-block"></div>
+            <div class="mock-line w90"></div>
+            <div class="mock-line w70"></div>
+            <div class="mock-line w45"></div>
+            <div class="mock-block"></div>
+            <div class="mock-line w70"></div>
+            <div class="mock-line w90"></div>
+            <div class="mock-line w45"></div>
+          </div>
+          <div>
+            <div class="mock-line w70"></div>
+            <div class="mock-line w90"></div>
+            <div class="mock-line w45"></div>
+            <div class="mock-block"></div>
+            <div class="mock-line w90"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="desktop-hint">
+        <b>哦鲸鲸 M2 原型</b>
+        <span>·</span>
+        <span>悬停鲸鱼 300ms 看气泡 · 单击展开 · Ctrl+Shift+Space 面板 · Ctrl+Shift+Q 输入条 · Ctrl+Shift+A 截图</span>
+      </div>
+    </div>
+
+    <div class="taskbar" aria-hidden="true">
+      <div class="tb-icon"><!-- windows -->⧉</div>
+      <div class="tb-icon active"><!-- harness -->◈</div>
+      <div class="tb-icon"><!-- files -->▤</div>
+      <div class="tb-icon"><!-- term -->&gt;_</div>
+      <div class="tb-icon"><!-- clock -->◔</div>
+    </div>
+
+    <!-- ============ 悬浮窗舞台：所有形态在这里挂载 ============ -->
+    <div id="xj-stage" class="stage"></div>
+
+    <!-- ============ 反馈层 ============ -->
+    <div id="toast-layer" class="toasts" role="region" aria-label="提示"></div>
+    <div id="notify-layer"></div>
+
+    <!-- ============ 脚本（无构建、按依赖顺序同步加载） ============ -->
+    <script src="src/dom.js"></script>
+    <script src="src/platform.js"></script>
+    <script src="src/icons.js"></script>
+    <!-- 角色皮肤（用户指定形象）。没有这个文件时 whale.js 回落成内置鲸鱼 -->
+    <script src="src/avatar.js"></script>
+    <script src="src/whale.js"></script>
+    <script src="src/state.js"></script>
+    <!-- 台词库：鲸鱼开口说什么，全在这张表里（hover 时抽一句） -->
+    <script src="src/lines.js"></script>
+    <script src="src/mock.js"></script>
+    <script src="src/ui.js"></script>
+    <script src="src/composer.js"></script>
+    <script src="src/view-bubble.js"></script>
+    <script src="src/view-quickbar.js"></script>
+    <script src="src/view-panel.js"></script>
+    <script src="src/view-settings.js"></script>
+    <script src="src/view-onboarding.js"></script>
+    <script src="src/view-capture.js"></script>
+<script src="src/shot.js"></script>
+    <script src="src/devbar.js"></script>
+    <script src="src/app.js"></script>
+  </body>
+</html>

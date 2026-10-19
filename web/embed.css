@@ -1,0 +1,55 @@
+/* 哦鲸鲸嵌入式形态：透明底、无演示桌面、无原型控制台，只留浮窗本体 */
+html,
+body {
+  background: transparent !important;
+}
+
+body.embed .desktop,
+body.embed .taskbar,
+body.embed .desktop-hint,
+body.embed .devbar,
+body.embed .log-drawer,
+body.embed .through-banner,
+body.embed #toast-layer,
+body.embed #notify-layer,
+body.embed .factory-banner {
+  display: none !important;
+}
+
+body.embed .stage {
+  right: 10px !important;
+  bottom: 10px !important;
+}
+
+html.xj-embed,
+html.xj-embed body {
+  overflow: hidden;
+}
+
+/* iframe 尺寸跟着浮窗走，玻璃阴影需要一点余量 */
+body.embed .panel,
+body.embed .bubble,
+body.embed .quickbar {
+  box-shadow: var(--shadow-l3);
+}
+
+/* v1 只做「看状态 + 处理审批」：输入与停止还不接宿主，先隐藏，免得点了报错 */
+body.embed .composer-outer,
+body.embed .attach-confirm,
+body.embed .sess-foot {
+  display: none !important;
+}
+
+/* 快捷操作只留「审批中心 / 主界面」两项，四宫格改成两列 */
+body.embed .quick-actions {
+  grid-template-columns: repeat(2, 1fr) !important;
+}
+body.embed .quick-actions .qa:nth-child(1),
+body.embed .quick-actions .qa:nth-child(3) {
+  display: none !important;
+}
+
+/* 无输入区时面板不用留底部内边距 */
+body.embed .panel .scroll {
+  padding-bottom: 12px;
+}

@@ -1,0 +1,14 @@
+# ============================================================================
+# dsh-plugin-ojingjing —— DSH bundle patch
+#
+# 把哦鲸鲸悬浮窗的宿主插件插进 profile 的配置树。宿主侧只做三件事：
+#   1. 汇总会话状态（session/event → 内存快照）
+#   2. 接管浮窗能处理的审批（approval/request waterfall 应答者）
+#   3. 提供 /xj/* 路由 + 往页面注入承载浮窗的 iframe
+#
+# 依赖：webServer（页面注入与路由）。没有审批服务时只读状态，不接管任何决定。
+# ============================================================================
+
+- insert:
+    - id: dsh-plugin-ojingjing
+      name: dsh-plugin-ojingjing

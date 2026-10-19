@@ -1,0 +1,54 @@
+{
+  "name": "dsh-plugin-ojingjing",
+  "version": "0.3.0",
+  "description": "哦鲸鲸 · DeepSeek Harness 桌面右下角常驻悬浮窗：四形态、状态真值表、双角标、内嵌审批闭环；截图提问直接投进会话。只读任务状态，不读对话正文。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek-harness",
+    "overlay",
+    "widget",
+    "approval",
+    "notifications"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "icon": "./web/icon.png",
+  "files": [
+    "lib",
+    "web",
+    "cordis.patch.yml",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.1.7-rc.2"
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>哦鲸鲸表情校验</title>
+<link rel="stylesheet" href="src/styles.css" />
+<style>
+  html, body { margin: 0; background: #10192b; }
+  .wrap { display: flex; gap: 24px; padding: 32px; align-items: flex-end; }
+  .cell { text-align: center; color: rgba(255,255,255,.75); font: 12px/1.6 var(--font-ui); }
+  .big { width: 200px; height: 200px; margin-bottom: 8px; }
+  .mid { width: 64px; height: 64px; }
+  .small { width: 32px; height: 32px; }
+  .row { display: flex; gap: 16px; padding: 0 32px 32px; align-items: flex-end; }
+</style>
+</head>
+<body>
+  <div class="wrap" id="big"></div>
+  <div class="row" id="mid"></div>
+  <div class="row" id="small"></div>
+  <script src="src/dom.js"></script>
+  <script src="src/whale.js"></script>
+  <script>
+    const expressions = [["sleep","空闲"],["focus","工作中"],["alert","需要确认"],["happy","完成未读"],["offline","离线"]];
+    const big = document.getElementById("big");
+    const mid = document.getElementById("mid");
+    const small = document.getElementById("small");
+    expressions.forEach(([expr, label]) => {
+      const c = XJ.dom.h("div", { class: "cell" }, XJ.whale.make(expr, 200), XJ.dom.h("div", null, `big ${expr} · ${label}`));
+      c.querySelector(".whale").classList.add("big");
+      big.appendChild(c);
+      const m = XJ.dom.h("div", { class: "cell" }, XJ.whale.make(expr, 64));
+      m.querySelector(".whale").classList.add("mid");
+      mid.appendChild(m);
+      const s = XJ.dom.h("div", { class: "cell" }, XJ.whale.make(expr, 32));
+      s.querySelector(".whale").classList.add("small");
+      small.appendChild(s);
+    });
+  </script>
+</body>
+</html>
