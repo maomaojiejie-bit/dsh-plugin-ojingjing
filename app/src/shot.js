@@ -23,8 +23,40 @@
     sessionTitle: "",
   };
 
+  // WebView2 外壳（host=app）没有 window.xjNative，只有 postMessage：
+  // 这里补一层同形的假桥，让下面 call() 的调用点一行都不用改。
+  // 注意：外壳认的是 send / retake / polish 三个动词（Python 版的槽函数名是 sendShot/retakeShot/polishShot，
+  // 这里是 postMessage，得用外壳那侧的名字，否则消息到了也不认）
+  var shellBridge = {
+    sendShot: function (json) {
+      post("send", json);
+    },
+    retakeShot: function () {
+      post("retake", "");
+    },
+    polishShot: function (json) {
+      post("polish", json);
+    },
+  };
+
+  function textOf(json) {
+    try {
+      return String((JSON.parse(json) || {}).text || "");
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function post(action, json) {
+    if (!window.XJ || !XJ.embed || !XJ.embed.post) return;
+    XJ.embed.post({ type: "shot-action", action: action, text: textOf(json) });
+  }
+
   function bridge() {
-    return window.xjNative || (window.pywebview && window.pywebview.api) || null;
+    var native = window.xjNative || (window.pywebview && window.pywebview.api) || null;
+    if (native) return native;
+    if (window.XJ && XJ.embed && XJ.embed.host === "app") return shellBridge;
+    return null;
   }
 
   function call(name, arg) {

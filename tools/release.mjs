@@ -28,6 +28,8 @@ import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { die, phase, say, warn } from "./lib/log.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.github.com";
 const UPLOADS = "https://uploads.github.com";
@@ -43,13 +45,7 @@ const DRY = flag("dry-run");
 const DRAFT = flag("draft");
 const SKIP_PUSH = flag("skip-push");
 
-const log = (msg) => console.log(msg);
-const step = (msg) => console.log("\n▶ " + msg);
-const warn = (msg) => console.warn("! " + msg);
-function die(msg) {
-  console.error("\n✗ " + msg);
-  process.exit(1);
-}
+/* 输出层（say/phase/warn/die）统一走 lib/log.mjs，和各 install/uninstall 一致 */
 
 function git(...argv) {
   const out = execFileSync("git", argv, {
@@ -161,10 +157,10 @@ async function main() {
   const repo = m[2];
   const branch = gitTry("rev-parse", "--abbrev-ref", "HEAD") || "main";
 
-  log("仓库    " + owner + "/" + repo);
-  log("版本    " + version + "（tag " + tag + "）");
-  log("分支    " + branch);
-  log("模式    " + (DRY ? "只演练（不联网、不改仓库）" : DRAFT ? "发成草稿" : "正式发布"));
+  say("仓库    " + owner + "/" + repo);
+  say("版本    " + version + "（tag " + tag + "）");
+  say("分支    " + branch);
+  say("模式    " + (DRY ? "只演练（不联网、不改仓库）" : DRAFT ? "发成草稿" : "正式发布"));
 
   /* 3. 附件 */
   const tgzName = "dsh-plugin-ojingjing-" + version + ".tgz";
@@ -176,7 +172,7 @@ async function main() {
   const tgzBytes = fs.readFileSync(tgzPath);
   const sha = createHash("sha256").update(tgzBytes).digest("hex");
   fs.writeFileSync(sumPath, sha + "  " + tgzName + "\n", "utf8");
-  log("附件    dist/" + tgzName + "（" + tgzBytes.length + " B, sha256 " + sha.slice(0, 12) + "…）");
+  say("附件    dist/" + tgzName + "（" + tgzBytes.length + " B, sha256 " + sha.slice(0, 12) + "…）");
 
   /* 4. 发布说明 */
   const notesPath = path.join(ROOT, "releases", tag + ".md");
@@ -186,30 +182,30 @@ async function main() {
     warn("没有 releases/" + tag + ".md，用最近 20 条提交当说明");
     notes = gitTry("log", "--oneline", "-20");
   }
-  log("说明    " + (fs.existsSync(notesPath) ? "releases/" + tag + ".md" : "git log") + "（" + notes.length + " 字）");
+  say("说明    " + (fs.existsSync(notesPath) ? "releases/" + tag + ".md" : "git log") + "（" + notes.length + " 字）");
 
   /* 5. 工作区状态（脏了就提醒，不阻止：有时就是要把未提交的构建产物一起发） */
   const dirty = gitTry("status", "--porcelain");
   if (dirty) warn("工作区有未提交改动，本次发布会把它们一起推到仓库：\n" + dirty.split("\n").slice(0, 8).join("\n"));
 
   if (DRY) {
-    log("\n（演练结束）真发就再跑一次不带 --dry-run。");
+    say("\n（演练结束）真发就再跑一次不带 --dry-run。");
     return;
   }
 
   /* 6. 推代码 */
   if (!SKIP_PUSH) {
-    step("推送 " + branch + " 到 origin");
+    phase("推送 " + branch + " 到 origin");
     gitInherit("push", "origin", branch);
-  } else log("\n（跳过推送）");
+  } else say("\n（跳过推送）");
 
   /* 7. 打 tag 并推上去（已存在就复用） */
-  step("处理 tag " + tag);
+  phase("处理 tag " + tag);
   const hasLocal = !!gitTry("rev-parse", "--verify", "--quiet", "refs/tags/" + tag);
   if (!hasLocal) {
     git("tag", "-a", tag, "-m", "ojingjing " + tag);
-    log("  已创建本地 tag");
-  } else log("  本地已有同名 tag，复用");
+    say("  已创建本地 tag");
+  } else say("  本地已有同名 tag，复用");
   if (!SKIP_PUSH) {
     gitInherit("push", "origin", "refs/tags/" + tag);
   }
@@ -224,7 +220,7 @@ async function main() {
         "  · 或在能打开浏览器的终端里运行，让 GCM 弹窗登录"
     );
   }
-  log("\n凭据    " + from);
+  say("\n凭据    " + from);
 
   const me = await request("GET", API + "/repos/" + owner + "/" + repo, { token });
   if (me.status === 401) die("token 无效或权限不足（401）");
@@ -232,12 +228,12 @@ async function main() {
   if (me.status !== 200) die("读仓库信息失败：" + me.status + " " + (me.json && me.json.message ? me.json.message : ""));
 
   /* 9. 建/更新 Release */
-  step("创建 Release " + tag);
+  phase("创建 Release " + tag);
   const existing = await request("GET", API + "/repos/" + owner + "/" + repo + "/releases/tags/" + tag, { token });
   let rel = null;
   if (existing.status === 200 && existing.json && existing.json.id) {
     rel = existing.json;
-    log("  该 tag 已有 Release（#" + rel.id + "），更新说明");
+    say("  该 tag 已有 Release（#" + rel.id + "），更新说明");
     const patched = await request("PATCH", API + "/repos/" + owner + "/" + repo + "/releases/" + rel.id, {
       token,
       body: { name: "v" + version, body: notes, draft: DRAFT ? true : false, prerelease: false },
@@ -257,7 +253,7 @@ async function main() {
     });
     if (created.status !== 201) die("创建 Release 失败：" + created.status + " " + created.text.slice(0, 400));
     rel = created.json;
-    log("  已创建 #" + rel.id);
+    say("  已创建 #" + rel.id);
   }
 
   /* 10. 传附件：同名先删再传，免得 422 already_exists */
@@ -265,13 +261,13 @@ async function main() {
     [tgzName, tgzBytes, "application/gzip"],
     ["SHA256SUMS.txt", fs.readFileSync(sumPath), "text/plain"],
   ]) {
-    step("上传 " + file);
+    phase("上传 " + file);
     const assets = await request("GET", API + "/repos/" + owner + "/" + repo + "/releases/" + rel.id + "/assets", { token });
     if (assets.status === 200 && Array.isArray(assets.json)) {
       for (const a of assets.json) {
         if (a.name === file) {
           const del = await request("DELETE", API + "/repos/" + owner + "/" + repo + "/releases/assets/" + a.id, { token });
-          log("  同名附件已存在（#" + a.id + "），先删掉：" + del.status);
+          say("  同名附件已存在（#" + a.id + "），先删掉：" + del.status);
         }
       }
     }
@@ -281,11 +277,11 @@ async function main() {
       { token, body: data, headers: { "content-type": type } }
     );
     if (up.status !== 201) die("上传失败：" + up.status + " " + up.text.slice(0, 400));
-    log("  → " + (up.json && up.json.browser_download_url ? up.json.browser_download_url : "已上传"));
+    say("  → " + (up.json && up.json.browser_download_url ? up.json.browser_download_url : "已上传"));
   }
 
-  log("\n✓ 发布完成：" + (rel.html_url || API + "/repos/" + owner + "/" + repo + "/releases/tags/" + tag));
-  if (DRAFT) log("  （是草稿，去网页上点一下 Publish 才对外可见）");
+  say("\n✓ 发布完成：" + (rel.html_url || API + "/repos/" + owner + "/" + repo + "/releases/tags/" + tag));
+  if (DRAFT) say("  （是草稿，去网页上点一下 Publish 才对外可见）");
 }
 
 main().catch((e) => die(e && e.stack ? e.stack : String(e)));

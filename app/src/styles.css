@@ -289,12 +289,6 @@ textarea {
     background: var(--glass-fill-solid);
   }
 }
-body.gl-solid .glass {
-  background: var(--glass-fill-solid);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
 /* ---------- 6. 鲸鱼 IP（几何占位版，§7.6 保底方案） ---------- */
 .whale {
   position: relative;
@@ -326,14 +320,21 @@ body.gl-solid .glass {
   transition: opacity var(--dur-state) var(--ease-out);
 }
 /* 状态：空闲（睡觉 + zzz） */
+/* scale 用独立属性而不是 transform: scaleY——§24 的视线跟随在 .eye-open 上
+   写 transform: translate()，两者叠加（互不覆盖），睡觉的眯眼和跟随能同时在场。 */
 .whale.st-sleep .eye-open {
   opacity: 1;
-  transform: scaleY(0.16);
+  scale: 1 0.16;
   transform-origin: center;
 }
+/* 状态：空闲（睡觉 + zzz）。
+   zzz 也从常驻循环改成节拍（同 body.spin-tick）：睡眠态可以挂一整夜，
+   常驻循环等于整夜每帧重绘一次透明窗。 */
 .whale.st-sleep .zzz {
   opacity: 1;
-  animation: zzzFloat 2.6s var(--ease-out) infinite;
+}
+body.spin-tick .whale.st-sleep .zzz {
+  animation: zzzFloat 1.5s var(--ease-out) 1;
 }
 /* 状态：工作中（专注 + 头顶转圈） */
 .whale.st-focus .eye-open {
@@ -342,42 +343,52 @@ body.gl-solid .glass {
 .whale.st-focus .orbit {
   opacity: 1;
 }
-/* 转圈是「还在干活」的进度反馈，属于功能动画而不是装饰：
-   只动 rotate，linear 匀速，没有形变也没有透明度抖动——
-   软件光栅模式（html.xj-sw）里也让它继续转（只把速度放慢一档，见 §21）。
-   圆心写死成 28.4px 7.8px（与 whale.js 的 ORBIT 常量一致），
-   transform-box 用 view-box 才能按 viewBox 用户单位取原点。 */
+/* 转圈是「还在干活」的进度反馈，属于功能动画而不是装饰。
+   【性能】透明分层窗里「只要有动画在跑，合成器就按屏幕刷新率持续出帧」——
+   实测（C# 外壳 + 240Hz 屏）连续转圈会让 gpu-process 吃 45~90% 单核，
+   这台机器上游戏/浏览器再一分，帧就被抢走，看起来一卡一卡。
+   所以改成「节拍式」：app.js 的 tickSpin 每 5 秒给 body 挂 .spin-tick 1.5 秒，
+   让环整整转一圈再停；停下期间零动画、零出帧（实测 0~2%），
+   转动的那一秒照样读得出「在干活」，代价只有原来的三成。
+   transform-box 用 view-box 才能按 viewBox 用户单位取原点，
+   圆心写死 28.4px 7.8px（与 whale.js 的 ORBIT 常量一致）。 */
 .whale.st-focus .orbit-arm {
-  animation: orbitSpin 1.5s linear infinite;
   transform-box: view-box;
   transform-origin: 28.4px 7.8px;
 }
-/* 外圈虚线反向慢转：两层转速不同，读起来是「环在转」而不是「整块在晃」 */
+/* 外圈虚线反向转：两层方向相反，读起来是「环在转」而不是「整块在晃」 */
 .whale.st-focus .orbit-track {
-  animation: orbitSpin 6.5s linear infinite reverse;
   transform-box: view-box;
   transform-origin: 28.4px 7.8px;
+}
+body.spin-tick .whale.st-focus .orbit-arm {
+  animation: orbitSpin 1.5s var(--ease-soft) 1;
+}
+body.spin-tick .whale.st-focus .orbit-track {
+  animation: orbitSpin 1.5s linear 1 reverse;
 }
 /* 状态：需要确认（瞪眼 + 眉毛 + 感叹号） */
 .whale.st-alert .eye-open {
   opacity: 1;
-  transform: scaleY(1.18);
+  scale: 1 1.18;
   transform-origin: center;
 }
 .whale.st-alert .brows,
 .whale.st-alert .bang {
   opacity: 1;
 }
-.whale.st-alert .bang {
-  animation: bangPop 1.6s var(--ease-spring) infinite;
+/* 待确认的感叹号 / 完成未读的星星：都跟着节拍跳，不再常驻循环
+   （待确认可能挂很久，常驻循环等于一直占着一整个核）。 */
+body.spin-tick .whale.st-alert .bang {
+  animation: bangPop 1.5s var(--ease-spring) 1;
 }
 /* 状态：完成未读（眯眼笑 + 星星） */
 .whale.st-happy .eye-happy,
 .whale.st-happy .stars {
   opacity: 1;
 }
-.whale.st-happy .stars {
-  animation: twinkle 2.2s var(--ease-out) infinite;
+body.spin-tick .whale.st-happy .stars {
+  animation: twinkle 1.5s var(--ease-out) 1;
 }
 /* 状态：离线（灰度 + X 眼） */
 .whale.st-offline .eye-offline {
@@ -463,21 +474,21 @@ body.gl-solid .glass {
 .aura.show {
   opacity: 1;
 }
-.aura.aura-ice {
-  box-shadow: 0 0 0 2px rgba(124, 194, 255, 0.55), 0 0 18px 2px rgba(124, 194, 255, 0.35);
-}
 .aura.aura-amber {
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.75), 0 0 20px 3px rgba(251, 191, 36, 0.3);
 }
-/* 待确认：外圈再套一层琥珀脉冲环（transform 缩放，不动 box-shadow） */
+/* 待确认：外圈再套一层琥珀脉冲环（transform 缩放，不动 box-shadow）。
+   同样走节拍：待确认可能挂很久，常驻脉冲等于一直占着一个核。 */
 .aura.aura-amber::before {
   content: "";
   position: absolute;
   inset: -5px;
   border-radius: 50%;
   border: 1.5px solid rgba(251, 191, 36, 0.55);
-  animation: auraPulse 1.7s var(--ease-out) infinite;
   will-change: transform, opacity;
+}
+body.spin-tick .aura.aura-amber::before {
+  animation: auraPulse 1.5s var(--ease-out) 1;
 }
 @keyframes auraPulse {
   0%,
@@ -494,7 +505,11 @@ body.gl-solid .glass {
     opacity: 0;
   }
 }
-/* 工作中：蓝色流转环（conic + mask 做圆环，旋转只动 transform） */
+/* 工作中：蓝色流转环。
+   【性能】早先用 conic-gradient + mask-image 画圆环，看起来只动 transform，实际每帧都要重新光栅化——
+   实测（C# 外壳 + 240Hz 屏）gpu-process 单核占用 90%+，整机一忙就一卡一卡。
+   现在换成「预栅格化的 SVG 环当背景图 + 只转 transform」：一次栅格化后是静态纹理，旋转交给合成器，
+   同样场景实测降到 ~2%（见 styles.css 末尾「静息」一节）。改这里务必保持「无 mask、无实时 gradient」。 */
 .aura.aura-blue {
   box-shadow: 0 0 0 2px rgba(124, 194, 255, 0.55), 0 0 18px 2px rgba(124, 194, 255, 0.35);
 }
@@ -503,11 +518,14 @@ body.gl-solid .glass {
   position: absolute;
   inset: -3px;
   border-radius: 50%;
-  background: conic-gradient(from 0deg, rgba(124, 194, 255, 0) 62%, rgba(124, 194, 255, 0.9) 90%, rgba(124, 194, 255, 0));
-  -webkit-mask-image: radial-gradient(circle, transparent 58%, #000 62%);
-  mask-image: radial-gradient(circle, transparent 58%, #000 62%);
-  animation: auraSpin 3.2s linear infinite;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237cc2ff' stop-opacity='0'/%3E%3Cstop offset='0.55' stop-color='%237cc2ff' stop-opacity='0.15'/%3E%3Cstop offset='0.9' stop-color='%237cc2ff' stop-opacity='0.95'/%3E%3Cstop offset='1' stop-color='%237cc2ff' stop-opacity='0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='50' cy='50' r='46' fill='none' stroke='url(%23g)' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E")
+    0 0 / 100% 100% no-repeat;
   will-change: transform;
+}
+/* 流转跟着「节拍」走：每 5 秒转一整圈（同一个 .spin-tick，见 app.js 的 tickSpin），
+   而不是常驻无限旋转 —— 常驻会让 gpu-process 吃满一个核，机器一忙就掉帧。 */
+body.spin-tick .aura.aura-blue::before {
+  animation: auraSpin 1.5s linear 1;
 }
 @keyframes auraSpin {
   to {
@@ -517,8 +535,10 @@ body.gl-solid .glass {
 .aura.aura-green {
   box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.6), 0 0 16px 2px rgba(52, 211, 153, 0.28);
 }
-/* 未读到达：翠绿光环轻闪两下然后稳住（一次性，不无限循环） */
-.aura.aura-green.show {
+/* 未读到达：翠绿光环轻闪两下然后稳住（一次性，不无限循环）。
+   body 前缀是为了压过 §24 的 .aura.show:not(.aura-gray)「戴上」规则——
+   两者都命中这个元素时，闪两下是更想看到的那个（同特异性下后定义胜）。 */
+body .aura.aura-green.show {
   animation: auraFlash 1.6s var(--ease-out) 2;
 }
 @keyframes auraFlash {
@@ -793,16 +813,6 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
 }
 
 /* ---------- 8. 通用面板头 / 文字工具类 ---------- */
-.t-title {
-  font-size: var(--fs-title);
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: 0.1px;
-}
-.t-body {
-  font-size: var(--fs-body);
-  line-height: 1.55;
-}
 .t-aux {
   font-size: var(--fs-aux);
   color: var(--text-secondary);
@@ -925,8 +935,9 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
   border-color: rgba(107, 114, 128, 0.28);
   border-left-color: var(--offline);
 }
-/* 清空 / 闲着：退到中性玻璃 */
+/* 清空 / 闲着 / 闲聊：退到中性玻璃（闲聊池不跟状态走，别给它上色抢注意力） */
 .bubble-line.line-clear,
+.bubble-line.line-fun,
 .bubble-line.line-idle {
   background: rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 255, 255, 0.09);
@@ -1214,18 +1225,6 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
   gap: 2px;
   flex: none;
 }
-.qb-tool {
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  display: grid;
-  place-items: center;
-  color: var(--text-secondary);
-}
-.qb-tool:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-primary);
-}
 .qb-send {
   width: 28px;
   height: 28px;
@@ -1387,6 +1386,48 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
 }
 .usage-refresh.is-loading {
   color: rgba(255, 255, 255, 0.7);
+}
+
+/* ---------------- 陪伴条（A3） ----------------
+   和用量条同一套骨架，但底色偏暖一点（琥珀），跟「钱」那条区分开：
+   一个是消耗，一个是相处，别让人一眼看混。 */
+.company-bar {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 16px 10px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  background: rgba(251, 191, 36, 0.05);
+  border: 1px solid rgba(251, 191, 36, 0.1);
+  font-size: 11px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.6);
+  transition: background var(--dur-hover) var(--ease-soft), border-color var(--dur-hover) var(--ease-soft);
+}
+.company-bar:hover {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.16);
+}
+.company-k {
+  font-style: normal;
+  font-size: 10px;
+  color: rgba(251, 191, 36, 0.55);
+  letter-spacing: 0.04em;
+}
+.company-v {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 246, 224, 0.9);
+}
+.company-sub {
+  margin-left: auto;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .usage-refresh.is-loading .icon {
   animation: spin 900ms linear infinite;
@@ -1561,15 +1602,18 @@ body[data-hover-arm="1"] .orb:not(.dragging) {
   position: relative;
   overflow: hidden;
 }
-/* 工作中：进度条上一道流光（transform 驱动，不碰 layout） */
+/* 工作中：进度条上一道流光（transform 驱动，不碰 layout）。
+   同样改成节拍式：常驻无限循环会让透明窗每帧重绘一次（面板开着时实测 10~25% 单核）。 */
 .sess-card.working .progress:not(.done) > i::after {
   content: "";
   position: absolute;
   inset: 0;
   width: 40%;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
-  animation: progShine 1.7s linear infinite;
   will-change: transform;
+}
+body.spin-tick .sess-card.working .progress:not(.done) > i::after {
+  animation: progShine 1.5s linear 1;
 }
 @keyframes progShine {
   from {
@@ -2274,13 +2318,6 @@ input[type="time"].select-mini {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 5px;
   padding: 2px 6px;
-}
-.ob-demo {
-  margin-top: 20px;
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  gap: 10px;
 }
 .ob-demos {
   display: flex;
@@ -3099,6 +3136,71 @@ body.static-frame .aura-amber {
 .more-pending:hover {
   background: rgba(251, 191, 36, 0.12);
 }
+
+/* ---------------- D1：审批键盘流 + 只读批量放行 ---------------- */
+/* 分页器：贴在「需要你点头」右边，跟「查看全部」并排。纯文本按钮，不抢视觉。 */
+.pending-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  letter-spacing: 0;
+}
+.pending-nav-btn {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pending-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+.pending-nav-idx {
+  min-width: 24px;
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+/* 批量放行 + 键盘提示：一行，左边按钮右边说明 */
+.appr-batch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-height: 18px;
+}
+.appr-batch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  color: var(--success);
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.1);
+}
+.appr-batch-btn:hover {
+  background: rgba(52, 211, 153, 0.18);
+}
+.appr-keys {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+/* 窗口窄到放不下时优先砍提示，别让按钮换行 */
+@media (max-width: 380px) {
+  .appr-keys {
+    display: none;
+  }
+}
 /* 原生控件跟随深色（time / select），否则设置面板里会出现白底输入框 */
 html {
   color-scheme: dark;
@@ -3468,23 +3570,26 @@ html.xj-sw .whale .zzz,
 html.xj-sw .whale .bang,
 html.xj-sw .whale .stars,
 html.xj-sw .whale.st-offline .eye-offline,
-html.xj-sw .whale-av,
+html.xj-sw .whale-av .whale-face,
 html.xj-sw .aura::before,
 html.xj-sw .sess-card.working .progress:not(.done) > i::after {
   animation: none !important;
   will-change: auto;
 }
-
-/* 工作环放慢但不许停：1.5s/圈 → 2.4s/圈。虚线外圈在软件光栅里干脆不转，
-   少一层每帧要重画的区域，视觉上靠三颗泡泡已经足够读出「在转」。
-   steps(48)：这一圈要 2.4 秒，一秒 20 步肉眼完全看不出台阶，但合成次数少了 2/3。
-   实测（444x604 透明窗、软件光栅）空闲 CPU 从约 43% 掉到约 21% —— 因为这类窗口
-   的重绘是一整块 UpdateLayeredWindow，省下来的 CPU 正好留给悬停/展开那些真需要 60 帧的动画。 */
-html.xj-sw .whale.st-focus .orbit-arm {
-  animation-duration: 2.4s;
-  animation-timing-function: steps(48, end);
+/* §24 眼球/脸部跟随是 transition 不是 animation，软件光栅下同样每帧重绘，一起关。
+   一次性动画（Q 弹 / 苏醒 / 光环戴上）不在此列——它们每次只跑几百毫秒，
+   软件光栅下也就几帧，全关掉会让交互反馈变得死硬（§23 同款取舍）。 */
+html.xj-sw .whale .eye-open,
+html.xj-sw .whale-av .whale-face {
+  transition: none !important;
 }
-html.xj-sw .whale.st-focus .orbit-track {
+
+/* 工作环在软件光栅里也走节拍，只是转得慢一档（1.5s → 2.4s）。
+   虚线外圈在软件光栅里干脆连节拍也不转，少一层每帧要重画的区域。 */
+html.xj-sw body.spin-tick .whale.st-focus .orbit-arm {
+  animation-duration: 2.4s;
+}
+html.xj-sw body.spin-tick .whale.st-focus .orbit-track {
   animation: none !important;
 }
 
@@ -3502,6 +3607,34 @@ html.xj-sw .bubble,
 html.xj-sw .panel,
 html.xj-sw .quickbar {
   background-color: rgba(13, 19, 32, 0.94);
+}
+
+/* ============================================================
+   21b. WebView2 外壳（html.xj-app）
+   逐像素透明的窗口里，backdrop-filter 模糊的是「透明」——拿不到任何模糊，
+   却每帧都要为它算一遍。所以 WebView2 外壳里把模糊换成实底玻璃，
+   字看得清、GPU 也省一脚。动画全留（这档要的就是顺）。
+   ============================================================ */
+html.xj-app *,
+html.xj-app *::before,
+html.xj-app *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.xj-app,
+html.xj-app body {
+  -webkit-font-smoothing: antialiased;
+  /* 外壳默认是「不透明 + 外形裁剪」：窗口没有逐像素透明了，页面里空的地方会露出窗体底色，
+     这里直接把底色画成同一色号，卡片边缘就不会出现一圈深色框。 */
+  background: #0d1320;
+}
+html.xj-app .glass,
+html.xj-app .bubble,
+html.xj-app .panel,
+html.xj-app .quickbar {
+  /* 0.94 在这档偏透：模糊被关掉之后，6% 的底图就是一层洗不掉的脏点点，压在正文上费眼。
+     0.965 既保住玻璃感，又让字站得住。 */
+  background-color: rgba(13, 19, 32, 0.965);
 }
 
 /* ============================================================
@@ -3554,6 +3687,7 @@ html.xj-scrolling .aura::before,
 html.xj-scrolling .whale,
 html.xj-scrolling .whale .whale-body,
 html.xj-scrolling .whale-av,
+html.xj-scrolling .whale-av .whale-face,
 html.xj-scrolling .whale .eye-open,
 html.xj-scrolling .whale .zzz,
 html.xj-scrolling .whale .orbit-arm,
@@ -3570,6 +3704,30 @@ html.xj-scrolling .row,
 html.xj-scrolling .qa,
 html.xj-scrolling .sess-card:hover {
   transition: none !important;
+}
+/* §24 眼球/脸部跟随走 transition（见 §24），animation-play-state 管不到它；
+   滚动期间一并停掉，残留的位移立即到位——滚轮时指针本来就不该在指挥眼睛。 */
+html.xj-scrolling .whale .eye-open,
+html.xj-scrolling .whale-av .whale-face {
+  transition: none !important;
+}
+
+/* 面板/气泡打开时，把「常驻装饰动画」停掉。
+   这条是这台 240Hz 机器上实测出来的大头：透明窗口里只要有任何一个动画在跑，合成器就会
+   按屏幕刷新率持续出帧，而成本随窗口面积走 —— 面板（444×604）打开时空闲 1.09 个核，
+   停掉这些装饰后 0.06 个核，相差 18 倍；滚动要抢的正是这些帧。
+   只停 24px 小头像上的浮动和转圈，肉眼几乎看不出；会话卡上的「工作中」胶囊和进度条
+   还在，工作状态不会丢。收起成鲸鱼球时照旧呼吸 —— 窗口只有 108×108，那点开销可以忽略。 */
+.panel .whale-av .whale-face,
+.panel .whale-av .orbit-arm,
+.panel .whale-av .orbit-track,
+.bubble .whale-av .whale-face,
+.bubble .whale-av .orbit-arm,
+.bubble .whale-av .orbit-track,
+.quickbar .whale-av .whale-face,
+.quickbar .whale-av .orbit-arm,
+.quickbar .whale-av .orbit-track {
+  animation: none !important;
 }
 
 /* ============================================================
@@ -3619,9 +3777,14 @@ html.xj-scrolling .sess-card:hover {
   }
 }
 
-/* ---- 鲸鱼：角色皮肤（img 版）没有 SVG 呼吸，补一层待机浮动 ---- */
-.whale-av {
-  animation: avFloat 5.6s var(--ease-out) infinite;
+/* ---- 鲸鱼：角色皮肤（img 版）的「生命律动」改成节拍式 ----
+   原来这里是常驻的 avFloat（0.4px / 3s 无限循环）。实测（C# 外壳 + 240Hz 屏）：
+   它一个人就能让 gpu-process 吃掉 40~50% 单核 —— 因为透明分层窗每帧都要整窗重绘一次，
+   0.4px 的位移也是「有变化」，合成器就得出一帧。
+   现在改成只在 body.spin-tick 那 1.5 秒里「轻轻鼓一下」（见 app.js 的 tickSpin），
+   配合光环流转 + 工作环转圈一起做，5 秒一次。平时完全静止 = 0 帧 = 0 CPU。
+   keyframes 留着：浏览器/原型页（!xj-app）里想恢复常驻呼吸，把下面这条 animation 打开即可。 */
+.whale-av .whale-face {
   will-change: transform;
 }
 @keyframes avFloat {
@@ -3630,21 +3793,123 @@ html.xj-scrolling .sess-card:hover {
     transform: translateY(0);
   }
   50% {
-    transform: translateY(-1.6px);
+    transform: translateY(-0.4px);
+  }
+}
+/* 节拍里的「鼓一下」：1.5% 的缩放，肉眼是呼吸，不是跳动 */
+body.spin-tick .whale-av {
+  animation: avBreath 1.5s var(--ease-soft) 1;
+}
+@keyframes avBreath {
+  0%,
+  100% {
+    transform: none;
+  }
+  45% {
+    transform: scale(1.015);
   }
 }
 
+/* ---- 鲸鱼：深睡（闲置数分钟）停呼吸 ----
+   idle 是最长驻的状态，分层透明窗里每一帧都是一次整窗重绘；停掉呼吸省下的正好留给交互。
+   不用「直接 animation: none」：那会把 transform 从关键帧中途硬拽回 0，最多 1.5px 的跳变。
+   改成一条「从呼吸顶部收到静止」的一次性动画，700ms 收干净，之后 forwards 停在 scale(1)。
+   用户一有动作（markTouch）就摘类，whaleBreath 从 0% 重启，而 0% 本身就是静止位，同样不跳。
+   zzz 是子元素自己的动画，不受影响 —— 深睡只是不喘气，还在睡。 */
+body.xj-deep-sleep .whale:not(.whale-av) {
+  animation: whaleSettle 700ms var(--ease-out) forwards;
+}
+@keyframes whaleSettle {
+  from {
+    transform: translateY(-1.5px) scale(1.012);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ---- 静息：闲置 20 秒，常驻装饰动画按暂停 ----
+   app.js 的 tickDeepSleep 会按「收起态 + 20 秒没动」给 body 挂 .xj-calm。
+   实测（C# 外壳 + 240Hz 屏，gpu-process 单核占用）：装饰动画全开 74~100%，全停 0~1.2%。
+   这些循环每帧都要重绘一次整窗，机器一忙（游戏/浏览器）就被抢帧，看起来一卡一卡。
+   用 paused 而不是 none：分层窗里硬摘类会把元素拽回起点、视觉跳一下；paused 停在当前帧、醒来接着走。
+   光环/头像/工作环/zzz 都算「一直挂在那儿」的装饰，唯一还留着的状态信号是「待确认」的琥珀脉冲和「离线」的灰度虚线环宽度。 */
+body.xj-calm .aura::before,
+body.xj-calm .aura,
+body.xj-calm .whale-face,
+body.xj-calm .whale-av,
+body.xj-calm .orbit-arm,
+body.xj-calm .orbit-track,
+body.xj-calm .zzz,
+body.xj-calm .stars {
+  animation-play-state: paused !important;
+}
+
+/* ---- 鲸鱼：陪伴里程碑放星星（A3，一次性）----
+   跟 .hop / .xj-swap 一样是「事件驱动的单次动画」，所以不进 §21 的循环动画关闭清单
+   （那两份清单管的是常驻装饰：软件光栅下它们每帧都要重绘）。 */
+.whale-burst {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: center;
+}
+.whale.xj-burst .whale-burst {
+  animation: whaleBurst 900ms var(--ease-out);
+}
+@keyframes whaleBurst {
+  0% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.45);
+  }
+}
+
+/* ---- 审批卡：双击鲸鱼直达时点亮一下（E4，一次性）----
+   只动 border-color，不去碰 box-shadow —— 那张卡本来就有两层阴影，动画改它会把层次压平。
+   减少动画模式下动画被压成 0.001ms、等于看不见，那边改成「一直亮着」直到 JS 把类摘掉。 */
+.approval-card.xj-attn {
+  animation: attnPulse 1.2s var(--ease-out);
+}
+@keyframes attnPulse {
+  0% {
+    border-color: rgba(251, 191, 36, 0.42);
+  }
+  35% {
+    border-color: rgba(251, 191, 36, 0.95);
+  }
+  100% {
+    border-color: rgba(251, 191, 36, 0.42);
+  }
+}
+body.reduce-motion .approval-card.xj-attn {
+  animation: none !important;
+  border-color: rgba(251, 191, 36, 0.95);
+}
+
 /* ---- 鲸鱼：随机眨眼（仅 SVG 几何版有 .eye-open；JS 随机触发） ---- */
+/* scale 独立属性：眨眼期间 §24 的视线跟随（transform: translate）不被吞——
+   眼睛是「一边偏移一边闭上」的，而不是先蹦回正中再眨。 */
 .whale .eye-open.xj-blink {
   animation: eyeBlink 150ms var(--ease-out);
 }
 @keyframes eyeBlink {
   0%,
   100% {
-    transform: scaleY(1);
+    scale: 1 1;
   }
   50% {
-    transform: scaleY(0.1);
+    scale: 1 0.1;
   }
 }
 
@@ -3726,4 +3991,141 @@ html.xj-scrolling .sess-card:hover {
     transform: scale(0.3);
     opacity: 0;
   }
+}
+
+/* ============================================================
+   24. 动画增强二批（2026-10-21）
+   原则与 §23 相同：只动 transform / opacity；常驻类登记 §21/§22 清单；
+   一次性动画（Q 弹 / 苏醒 / 光环戴上）跟 .hop / .xj-burst 同待遇，
+   不占常驻开销，但都要有 reduce-motion 降级。
+   本批落地 ROADMAP 的 B2（视线跟随）、B5（点击 Q 弹）、B3（苏醒过渡）。
+   ============================================================ */
+
+/* ---- B2 视线跟随：眼珠随指针微移 ----
+   做法上刻意不用 rAF 循环 + JS spring：那意味着只要指针在动，每一帧都要
+   写一次样式、合成器出一帧——在分层透明窗里就是一帧整窗重绘。
+   改成「指针移动时只更新两个 CSS 变量，平滑交给 transition」：
+   常驻零开销，指针停下时 transition 自然停在目标位；
+   指针离开窗口时变量归零，眼睛自己滑回正中。
+   幅度 ±1.2（viewBox 单位，球 52px 时约 ±1.7px）：眼珠不动显木，
+   动大了像卡通。眨眼动画（eyeBlink）只改 scale，会短暂盖住 translate——
+   150ms 里眼睛回中再闭上，读起来反而是「聚焦一下再眨」，无感。
+   【为什么 transform 上只准写 translate】各态表情的缩放全在独立 scale 属性上
+   （st-sleep 的 .16 眯眼、st-alert 的 1.18 瞪眼、eyeBlink 的 0.1）——
+   渲染顺序是 translate → rotate → scale → transform，三者叠加互不覆盖。
+   反过来若把表情的 scale 写在 transform 上，跟随的 translate 会整条覆盖它，
+   alert 的瞪眼会被吞（2026-10-21 实测踩过）。 */
+.whale:not(.st-sleep):not(.st-offline) .eye-open {
+  /* 变量必须带长度单位：CSS transform 的 translate() 不收纯数字，
+     JS 写 "--eye-x: -1.2" 会让整条 transform 声明失效（2026-10-21 实测踩过）。
+     fallback 同理带 px。 */
+  transform: translate(var(--eye-x, 0px), var(--eye-y, 0px));
+  transition: transform 220ms var(--ease-soft);
+}
+/* 面板/气泡里鲸鱼很小且用户视线在内容上，不让眼睛乱转（JS 也不会挂变量，
+   这里只是双保险：形态变化时如果有残留变量，立刻清掉过渡） */
+/* !important 是必须的：上面的跟随规则带 4 个类选择器（特异性 (0,4,0)），
+   不加压不住它（实测 reduce-motion 下 transition-property 仍是 transform）。 */
+body.reduce-motion .whale .eye-open {
+  transition: none !important;
+}
+/* 头像版（角色皮肤）没有 .eye-open——表情画在图里，动不了单颗眼珠。
+   退而求其次「整脸轻转」：幅度 ±0.7px，只有眼珠（±1.7px）的四成——
+   整头位移比单颗眼珠显眼得多，小了才不老成。
+   .whale-face 上没有常驻动画（avBreath 动的是外层 .whale-av），所以这条 transform
+   不会和谁打架；spin-tick 那 1.5 秒里外层动画接管外层 transform，内层照转。 */
+.whale-av:not(.st-sleep):not(.st-offline) .whale-face {
+  transform: translate(var(--face-x, 0px), var(--face-y, 0px));
+  transition: transform 220ms var(--ease-soft);
+}
+body.reduce-motion .whale-av .whale-face {
+  transition: none !important;
+}
+
+/* ---- B5 点击 Q 弹：squash & stretch ----
+   参考「灵动岛」的预备动作：先蹲（压扁）再跳（拉长），落位时带一次小过冲。
+   全部写在关键帧里，缓动用 ease-out 就够——每段各自套 spring 曲线接缝会顿
+   （§23 whaleHop 的教训）。transform-origin 压在球底（90%），
+   「被按下去」的方向感才对。和 .orb:active 的 scale(0.96) 天然衔接：
+   松手那一刻 active 消失、动画接管，中间没有空档。 */
+.orb.xj-tap {
+  animation: orbTap 420ms var(--ease-out);
+}
+@keyframes orbTap {
+  0% {
+    transform: translateY(2px) scale(1.07, 0.93);
+  }
+  32% {
+    transform: translateY(-2px) scale(0.96, 1.05);
+  }
+  62% {
+    transform: translateY(0) scale(1.02, 0.98);
+  }
+  100% {
+    transform: none;
+  }
+}
+body.reduce-motion .orb.xj-tap {
+  animation: none;
+}
+
+/* ---- B3 苏醒过渡：离线/重连恢复那一刻「醒过来」----
+   灰度是 body.is-offline 上的 filter，不能碰（每帧重绘）。苏醒感全靠
+   本体的弹入：从下沉位 + 小尺寸起，过一次冲，像深吸一口气。
+   offline 时眼睛是 X（.eye-offline），苏醒同时补一次眨眼（JS 触发），
+   「X 眼收回、睁一下眼」的顺序就出来了。 */
+.whale.xj-wake {
+  animation: whaleWake 700ms var(--ease-spring);
+}
+@keyframes whaleWake {
+  0% {
+    transform: translateY(3px) scale(0.93);
+  }
+  55% {
+    transform: translateY(0) scale(1.045);
+  }
+  100% {
+    transform: none;
+  }
+}
+body.reduce-motion .whale.xj-wake {
+  animation: none;
+}
+/* 入睡对称面：在线掉线那一刻垂一下头（300ms，比苏醒短——
+   「失去」不该比「得到」更隆重）。 */
+.whale.xj-doze {
+  animation: whaleDoze 320ms var(--ease-out);
+}
+@keyframes whaleDoze {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    transform: translateY(2.5px) scale(0.975);
+  }
+}
+body.reduce-motion .whale.xj-doze {
+  animation: none;
+}
+
+/* ---- 光环「戴上」：出现时从小半档放大就位 ----
+   原来 .aura.show 只过渡 opacity，光环是「凭空显形」的，塑料感来自这里。
+   collapsed 视图是全量重建（render 的 diff 闸门保证只有内容真变才重建），
+   光环元素每次都是新的，所以用 animation: both 而不是 transition：
+   from 帧 scale(0.82)+透明，终点落在元素自然样式（scale(1)+.show 的 opacity 1）。
+   状态真变时重建 → 动画重播 → 「光圈重新落到球上」，正是想要的时机；
+   diff 闸门挡住的无变化 render 不会重建，也就不会重播。
+   离线虚线环（.aura-gray）不参与——它 12s 匀速自转，叠 scale 会让虚线间距
+   看起来在呼吸，乱。 */
+.aura.show:not(.aura-gray) {
+  animation: auraIn 240ms var(--ease-out) both;
+}
+@keyframes auraIn {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+}
+body.reduce-motion .aura.show:not(.aura-gray) {
+  animation: none;
 }

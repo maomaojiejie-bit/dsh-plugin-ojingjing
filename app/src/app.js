@@ -14,7 +14,6 @@
 
   let stageEl = null;
   let hoverTimer = null;
-  let hideTimer = null;
   let offlineTimer = null;
   let reconnectAttempt = 0;
   let booted = false;
@@ -36,7 +35,12 @@
     decideApproval,
     answerQuestion,
     stopSession,
+    movePendingCursor,
+    approveAllRead,
     orbPointerDown,
+    shellTap,
+    summon,
+    companionData: applyCompanion,
     orbHoverStart,
     orbHoverEnd,
     cancelHoverTimer,
@@ -97,33 +101,78 @@
     ["pointerdown", "pointermove", "keydown", "wheel"].forEach((type) => {
       window.addEventListener(type, markTouch, { passive: true });
     });
+    /* 页面里的每一次真实点击都告诉外壳一声（tap-ack）。
+       外壳拿它当「这一下页面已经自己收到了」的证据：收到了就绝不再补发 shell-tap。
+       之前只在球体上 ack，结果点气泡/面板里的按钮时不 ack → 外壳以为是「点击没送到」，
+       补一条 shell-tap 上来把这次点击变成「开关气泡」——按钮自然就点不动了。 */
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        const onOrb = !!(e.target && e.target.closest && e.target.closest(".orb"));
+        lastPointerAt = Date.now();
+        if (XJ.embed && XJ.embed.post) {
+          XJ.embed.post({ type: "tap-ack", x: Math.round(e.clientX), y: Math.round(e.clientY) });
+        }
+        /* 收起态「整窗都算鲸鱼」：窗口只有 108x108，球本身只有 64x64，
+           点在球外围那圈留白上原本什么都不发生 —— 用户看到的就是「点不动」。
+           这里把这种情况兜住，只要窗口还是收起态，点哪儿都算点了鲸鱼。 */
+        if (onOrb || S().ui.form !== "collapsed") return;
+        if (S().settings.clickThrough || e.button !== 0) return;
+        if (XJ.shot && XJ.shot.active) return;
+        handleOrbTap(e);
+      },
+      true
+    );
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") markTouch();
     });
 
     // 面板开着时顺手刷一下余额（插件侧 60s 缓存，这里的频率拿不到就是拿不到，不会打爆接口）
+    // 陪伴也一起刷：面板开着不动的人，数字应该自己往前走
     setInterval(() => {
-      if (S().ui.form === "panel") refreshUsage({ quiet: true });
+      if (S().ui.form !== "panel") return;
+      refreshUsage({ quiet: true });
+      refreshCompanion();
     }, 60000);
+
+    // 陪伴数据：桥可能在 app.js 之后才连上（QWebChannel 是异步的），两个时机都挂
+    if (window.xjNative) wireCompanion();
+    window.addEventListener("xj-native-ready", wireCompanion);
 
     // 闲下来主动搭话
     setInterval(maybeNudge, 15000);
+    // 深睡判定：10s 一次，纯 class 比对，没有变化就直接 return
+    setInterval(tickDeepSleep, 10000);
+    // 节拍式转圈：每 5 秒让光环/工作环转一整圈（连续转等于每帧重绘整窗，实测吃满一个核）
+    // 注意：这里写死 5000，别用下面的 SPIN_EVERY_MS —— 那个 const 在 init() 之后才初始化（TDZ）
+    setInterval(tickSpin, 5000);
 
     // 滚动期间暂停装饰动画 / 悬停过渡：软件光栅下「转圈 + 呼吸 + 卡片 hover」和滚动抢帧，
     // 停掉的这几帧正好是手感最敏感的几帧；松手 160ms 后自动恢复。
     bindScrollBoost();
+    // 视线跟随（B2）：眼珠随指针微移，CSS transition 补平滑，平时零开销
+    bindEyeTrack();
     // 滚轮改成逐帧缓动（原生在软件光栅下是一格一跳）
     bindSmoothScroll();
+    // 悬停展开的「走没走」以窗口为准：节点换来换去都不影响
+    bindHoverWatcher();
 
     // 随机眨眼（仅 SVG 几何版有 .eye-open；角色头像版没有，querySelectorAll 空跑跳过。
     // 睡着的鲸鱼不眨——scaleY 已经是闭眼状态了）
+    // 约 1/5 概率连眨两次（间隔 130ms）：单眨是「硬件自检」，双眨才读得出「活的」。
     (function scheduleBlink() {
       setTimeout(function () {
+        const double = Math.random() < 0.2;
         document.querySelectorAll(".whale:not(.st-sleep) .eye-open").forEach(function (eye) {
-          eye.classList.add("xj-blink");
-          setTimeout(function () {
-            eye.classList.remove("xj-blink");
-          }, 200);
+          const once = (delay) =>
+            setTimeout(function () {
+              eye.classList.add("xj-blink");
+              setTimeout(function () {
+                eye.classList.remove("xj-blink");
+              }, 200);
+            }, delay);
+          once(0);
+          if (double) once(130);
         });
         scheduleBlink();
       }, 3200 + Math.random() * 4200);
@@ -163,6 +212,13 @@
   let lastStageHTML = "";
   let lastForm = "";
   let lastLevel = "";
+  // 上一次的连接态，只为「苏醒 / 入睡」过渡服务（B3）
+  let lastConn = "";
+  // 连接翻转时记下、等这一帧 DOM 重建完再消费（whale 是新节点，必须重建后才能加类）
+  let wakePending = false;
+  let dozePending = false;
+  // 上一次报给外壳的形态（避免每帧刷日志）
+  let lastPostedForm = "";
   function render() {
     const s = S();
     const active = document.activeElement;
@@ -172,6 +228,18 @@
 
     document.body.dataset.conn = s.connection;
     document.body.dataset.status = XJ.state.mainStatus(s).level;
+
+    /* B3 苏醒 / 入睡过渡：连接态翻转时给鲸鱼一个「醒过来 / 垂下去」的一次性动画。
+       检测放在 diff 闸门前面——panel 形态下 stage HTML 可能压根不变（闸门会整段跳过），
+       标志照样要更新，否则等回到收起态会补播一次陈年动画。
+       但 panel 形态本身没有鲸鱼，所以那一态连标志都不记：连接恢复时用户盯着面板，
+       几十秒后关面板也不该补一个「苏醒」。 */
+    const formForFx = s.ui.form;
+    if (lastConn && lastConn !== s.connection && formForFx !== "panel") {
+      if (lastConn === "offline" || lastConn === "reconnecting") wakePending = s.connection === "online";
+      else if (s.connection === "offline" || s.connection === "reconnecting") dozePending = true;
+    }
+    lastConn = s.connection;
     document.body.classList.toggle("is-presenting", XJ.state.presenting(s));
     document.body.classList.toggle("is-offline", s.connection === "offline");
     document.body.classList.toggle("through-mode", !!s.settings.clickThrough);
@@ -185,6 +253,12 @@
     document.documentElement.dataset.motion = s.settings.reduceAnim ? "off" : "on";
 
     const form = s.ui.form;
+    // 把形态同步给外壳写日志：排查「点了没反应」时，这行能直接告诉我们是
+    // 「没点进来」还是「点进来了但形态没变」
+    if (XJ.embed && XJ.embed.post && form !== lastPostedForm) {
+      lastPostedForm = form;
+      XJ.embed.post({ type: "form", value: form });
+    }
     stageEl.className = "stage stage-" + form;
     applyDock(s.settings.dockCorner || "br");
 
@@ -270,15 +344,47 @@
 
     // 状态等级变了：鲸鱼整块是新节点，直接换就是「啪」一下变脸（睡→干活→等你点头）。
     // 给一个很短的缩放淡入，读起来像「换了表情」而不是「换了一张图」。
+    // 状态等级变了：鲸鱼整块是新节点，直接换就是「啪」一下变脸（睡→干活→等你点头）。
+    // 给一个很短的缩放淡入，读起来像「换了表情」而不是「换了一张图」。
+    // 选择器必须带 .orb：bubble 形态的头部还有一个 32px 小头像（bubble-head 里），
+    // DOM 序在 orb 之前——早先用 .whale 时，形态一切到 bubble，变脸动画全加到小头像上，
+    // 主鲸鱼球「啪」地硬切（2026-10-21 发现，doze/wake 同款问题一起修）。
     const level = document.body.dataset.status;
     if (lastLevel && lastLevel !== level) {
-      const whale = stageEl.querySelector(".whale");
+      const whale = stageEl.querySelector(".orb .whale");
       if (whale) {
         whale.classList.add("xj-swap");
         whale.addEventListener("animationend", () => whale.classList.remove("xj-swap"), { once: true });
       }
     }
     lastLevel = level;
+
+    // B3：苏醒 / 入睡。whale 刚重建出来，加类即播，animationend 摘类（同 xj-swap 模式）。
+    // 苏醒时补一次眨眼——offline 的眼睛是 X（.eye-offline 盖着 .eye-open），
+    // 「X 收回 + 眨一下」的顺序读起来就是睁眼。入睡只垂头，不闭眼（X 眼会自己上来）。
+    const pendingFx = wakePending ? "xj-wake" : dozePending ? "xj-doze" : "";
+    wakePending = dozePending = false;
+    if (pendingFx) {
+      // 主鲸鱼在 .orb 里（bubble-head 那个 32px 小头像不是它，见上面 swap 段的注释）
+      const whale = stageEl.querySelector(".orb .whale");
+      if (whale) {
+        // 先把另一个摘掉：掉线 1 秒内重连上线时两个 class 会撞上，
+        // 两条规则同特异性、后定义的（doze）赢，苏醒会被垂头盖住。
+        whale.classList.remove("xj-wake", "xj-doze");
+        void whale.offsetWidth; // 强制回流：摘了再加，动画才会重播
+        whale.classList.add(pendingFx);
+        whale.addEventListener("animationend", () => whale.classList.remove(pendingFx), { once: true });
+        if (pendingFx === "xj-wake") {
+          const eye = whale.querySelector(".eye-open");
+          if (eye) {
+            setTimeout(() => {
+              eye.classList.add("xj-blink");
+              setTimeout(() => eye.classList.remove("xj-blink"), 200);
+            }, 260);
+          }
+        }
+      }
+    }
 
     // 焦点守恒
     if (fkey) {
@@ -406,10 +512,26 @@
     A().setForm("collapsed");
   }
 
-  function openPanel() {
+  function openPanel(opts) {
     cancelHoverTimer();
     delete document.body.dataset.hoverExpand;
     A().setForm("panel");
+    refreshCompanion();
+    if (opts && opts.focusPending) pulseFirstPending();
+  }
+
+  /**
+   * 把第一张待办卡点亮一下（E4）。
+   * 面板本来就把第一张钉在顶上（§8.3 审批卡不进滚动区），所以不用滚动 —— 缺的只是「看这儿」。
+   * 渲染是同步的：setForm 里 store.emit() 直接把 DOM 换掉，所以这里能立刻查到新节点。
+   */
+  function pulseFirstPending() {
+    const card = document.querySelector("#xj-stage .approval-zone .approval-card");
+    if (!card) return;
+    card.classList.remove("xj-attn");
+    void card.offsetWidth; // 强制回流：同一个类才能连着亮两次
+    card.classList.add("xj-attn");
+    setTimeout(() => card.classList.remove("xj-attn"), 1300);
   }
 
   function openQuickbar() {
@@ -478,6 +600,10 @@
       native.capture();
       return;
     }
+    if (XJ.embed && XJ.embed.host === "app" && XJ.embed.post) {
+      XJ.embed.post({ type: "shot-capture" });
+      return;
+    }
     XJ.capture.start();
   }
 
@@ -497,7 +623,16 @@
     const s = S();
     if (s.ui.form !== "collapsed") return;
     if (s.settings.clickThrough) return;
-    clearTimeout(hideTimer);
+    // 点击宽限期内（handleOrbTap 设的 1.5s）不悬停：不然「点开气泡 → 光标还在球上 →
+    // 300ms 后悬停又把它撑一遍」。arm 是悬停的前奏，一样要挡住——
+    // 晚了 1ms 到的合成 mouseenter（setForm 重建 orb 后 Chrome 补派的）会把 arm 挂上，
+    // 而 orbArm 带 both 填充、特异性也比 Q 弹高，Q 弹会被它整段盖住。
+    if (Date.now() < tapGraceUntil) return;
+    // 刚被点掉（点击收起）的那一下，别让悬停立刻把它又撑开 ——
+    // 光标本来就还压在球上，不挡住的话「点一下想收起来」会瞬间弹回去，看着像点了没反应。
+    if (Date.now() < hoverBlockUntil) return;
+    // 上一次是「点击收起」的，那要等指针真正离开过才允许悬停再展开
+    if (hoverNeedLeave) return;
     clearTimeout(hoverTimer);
     // 等待的 300ms 里先「屏一口气」（styles.css 的 orbArm）：球微微收紧，
     // 让后面那一下绽开有前因，而不是冷不丁换掉一整块 360px 玻璃板。
@@ -510,6 +645,9 @@
         // 晚一帧设置会先按 formIn 起播、再被换规则打断一次（看着像抽了一下）。
         document.body.dataset.hoverExpand = "1";
         A().setForm("bubble");
+        // 记下「刚被悬停撑开」的时刻：紧跟着落下的那一下点击不能当成「收起」，
+        // 否则鼠标一碰球（先展开）再点（立刻收起）就是一次闪，用户看到的是「点了没反应」
+        lastHoverExpandAt = Date.now();
       }
     }, 300);
   }
@@ -520,57 +658,170 @@
     if (XJ.lines && !s.ui.line) s.ui.line = XJ.lines.pick(s);
   }
 
+  /* 蹲在球上「屏一口气」的那只手要停掉。收不收，全交给 bindHoverWatcher 的轮询决定 ——
+     这里不再按 mouseleave 直接安排收起，那正是抽搐的来源。 */
   function orbHoverEnd() {
     cancelHoverTimer();
     delete document.body.dataset.hoverArm;
-    const s = S();
-    if (s.ui.form !== "bubble") return;
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => {
-      if (S().ui.form === "bubble") {
-        A().setForm("collapsed");
-        delete document.body.dataset.hoverExpand;
-      }
-    }, 160);
   }
 
   function cancelHoverTimer() {
     clearTimeout(hoverTimer);
     hoverTimer = null;
-    clearTimeout(hideTimer);
+  }
+
+  /* 悬停收起改成「轮询判定」，不再信任何 mouseleave / pointerleave：
+     窗口 resize 的几十毫秒里这些事件会甩出一串假的 leave/enter，
+     而且 WebView2 还会把 :hover 判错（自己 resize 之后就不认了）。
+     所以每 200ms 问一次「指针还在不在窗口里」：
+     有外壳回报就用外壳的（真实光标 + 窗口矩形），没有才退回 CSS :hover。
+     连续 5 次不在（≈1 秒）才收 —— 真走人一定稳定地不在，假抖动凑不满 5 次。 */
+  function pointerInsideWindow() {
+    if (XJ.embed && typeof XJ.embed.pointerInside === "function") {
+      const v = XJ.embed.pointerInside();
+      if (v === true || v === false) return v;
+    }
+    return !!(stageEl && stageEl.matches(":hover"));
+  }
+
+  /* 外壳给的是「稳定后」的信号（进去立刻、出来要等 500ms），所以它可信，3 拍就能收；
+     退回 :hover 时假 leave 多，给到 5 拍。 */
+  function hoverMissLimit() {
+    if (XJ.embed && typeof XJ.embed.pointerInside === "function") {
+      const v = XJ.embed.pointerInside();
+      if (v === true || v === false) return 3;
+    }
+    return 5;
+  }
+
+  function bindHoverWatcher() {
+    if (!stageEl) return;
+    let misses = 0;
+    setInterval(function () {
+      // 指针离开过窗口就把「点击收起」的悬停封锁解开（下一轮悬停才允许展开）
+      if (hoverNeedLeave && S().ui.form === "collapsed" && !pointerInsideWindow()) hoverNeedLeave = false;
+      if (S().ui.form !== "bubble") {
+        misses = 0;
+        return;
+      }
+      // 闲时主动搭话那 14 秒是「自己要露脸」，不归悬停管
+      if (nudgeHideTimer) {
+        misses = 0;
+        return;
+      }
+      if (Date.now() < tapGraceUntil) {
+        misses = 0;
+        return;
+      }
+      if (pointerInsideWindow()) {
+        misses = 0;
+        return;
+      }
+      misses++;
+      if (misses < hoverMissLimit()) return;
+      misses = 0;
+      A().setForm("collapsed");
+      delete document.body.dataset.hoverExpand;
+    }, 200);
+  }
+
+  /* E4：双击鲸鱼直达最新待办。单击仍然是气泡（最常用的动作），双击才进面板。
+     有待办时单击会延后 260ms —— 不然「单击开气泡、双击开面板」会先闪一下气泡。
+     只在有待办时延后：那种状态下双击才是你真正想做的事，多等这一拍不算亏。 */
+  const DOUBLE_TAP_MS = 320;
+  let orbTapAt = 0;
+  let orbTapXY = null;
+  let orbTapTimer = 0;
+  // 页面最近一次收到真实 pointerdown 的时间（外壳 shell-tap 兜底要去重）
+  let lastPointerAt = 0;
+  /* 刚点完的宽限期：气泡是「点开」的，不是「悬停撑开」的，
+     所以这一小段时间内不许悬停看门狗把它收回去。
+     否则就会出现「点了之后气泡闪一下又没了」——用户以为点了没反应。
+     指针信号是改动才发的，鼠标没动时页面手里那份可能还是旧的 false。 */
+  let tapGraceUntil = 0;
+  // 点击收起之后的「悬停静默期」：光标还压在球上时，不能马上又悬停展开
+  let hoverBlockUntil = 0;
+  /* 点击收起后要求「指针真的离开过一次」才允许再悬停展开。
+     否则用户点一下想收起来，光标还在球上，1 秒后又自己撑开 —— 就是「点了没反应」的观感。
+     外壳的 pointer 信号到 false、或者 DOM 给了 pointerleave，都算离开过。 */
+  let hoverNeedLeave = false;
+  // 最近一次「悬停撑开」的时刻（用来吃掉紧跟其后的那一下点击）
+  let lastHoverExpandAt = 0;
+
+  /**
+   * 外壳补发的「点了鲸鱼」。全屏游戏独占鼠标时窗口可能一条鼠标消息都收不到，
+   * 外壳用 GetAsyncKeyState + 光标位置补一条过来（它已经确认过光标当时在窗口矩形里）。
+   * 这里只做去重：页面自己 120ms 内已经收到过真实点击就忽略，免得同一次点击被算两下。
+   * 不再看 pointerInside —— 那条信号是「指针在不在窗内」的滞后镜像，
+   * 拿它当闸门会让兜底在边界上时好时坏（这正是之前「点了没反应」的一环）。
+   */
+  function shellTap() {
+    if (S().settings.clickThrough) return;
+    // 页面自己刚收到过真实点击就绝不补发：那一下是用户点按钮/输入框的，
+    // 补一条上来会被当成「开关鲸鱼」，把按钮点击吃掉（这就是「点不到按键」）
+    if (Date.now() - lastPointerAt < 400) return;
+    // 只对收起态生效：气泡/面板开着时补发一定会误关
+    if (S().ui.form !== "collapsed") return;
+    setTimeout(() => {
+      if (Date.now() - lastPointerAt < 400) return;
+      if (S().ui.form !== "collapsed") return;
+      const rect = stageEl ? stageEl.getBoundingClientRect() : { left: 0, top: 0, width: 108, height: 108 };
+      handleOrbTap({ clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+    }, 45);
+  }
+
+  /** 外壳热键召唤：收起态就开面板，已经开着就收起。用户在全屏游戏里唯一够得着的入口。 */
+  function summon() {
+    if (S().ui.form === "collapsed") {
+      A().setForm("panel");
+      A().patchSettings({ panelScreen: "home" });
+    } else {
+      collapse();
+    }
   }
 
   function orbPointerDown(e) {
     if (e.button !== 0 || S().settings.clickThrough) return;
+    // 让外壳日志记下「页面确实收到了这次点击」——排查「点了没反应」时这是唯一的分界线
+    if (XJ.embed && XJ.embed.post) XJ.embed.post({ type: "tap-ack", x: Math.round(e.clientX), y: Math.round(e.clientY) });
     e.preventDefault();
 
-    // 独立桌面窗：按下即交给系统做窗口拖动（§4.2 的自由拖拽由外壳实现）
-    if (XJ.embed && XJ.embed.host === "app" && XJ.embed.post) {
-      XJ.embed.post({ type: "drag" });
-      return;
-    }
+    // 独立桌面窗：拖动交给外壳（§4.2），但**不能在按下时就交**——
+    // 一旦 SendMessage(WM_NCLBUTTONDOWN) 进了系统移动循环，指针就归系统了，
+    // 页面再也收不到 pointerup，单击/双击全都失效。所以先自己盯着，真移动了才交出去。
+    const native = !!(XJ.embed && XJ.embed.host === "app" && XJ.embed.post);
 
     const start = { x: e.clientX, y: e.clientY, t: Date.now() };
     let moved = false;
     let raf = 0;
 
+    const cleanup = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+
     const onMove = (ev) => {
       if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > 4) {
         moved = true;
+        if (native) {
+          // 交给系统之后这边就不会再有事件了，监听和 dragging 类必须当场收干净
+          cleanup();
+          XJ.embed.post({ type: "drag" });
+          return;
+        }
         stageEl.classList.add("dragging");
         const orb = stageEl.querySelector(".orb");
         if (orb) orb.classList.add("dragging");
         cancelAnimationFrame(raf);
       }
-      if (moved) {
+      if (moved && !native) {
         const dx = ev.clientX - start.x;
         const dy = ev.clientY - start.y;
         stageEl.style.transform = "translate(" + dx + "px," + dy + "px)";
       }
     };
     const onUp = (ev) => {
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
+      cleanup();
       stageEl.classList.remove("dragging");
       const orb = stageEl.querySelector(".orb");
       if (orb) orb.classList.remove("dragging");
@@ -581,15 +832,159 @@
         A().patchSettings({ dockCorner: corner });
         setTimeout(() => stageEl.classList.remove("snapping"), 280);
       } else if (Date.now() - start.t < 500) {
-        // 单击：切换气泡（不改台词，避免「点一下换一句」）
-        if (S().ui.form === "collapsed") {
-          ensureLine();
-          A().setForm("bubble");
-        } else if (S().ui.form === "bubble") A().setForm("collapsed");
+        handleOrbTap(ev);
       }
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
+  }
+
+  /** 鲸鱼上的一次「点」（不含拖动）：分辨单击 / 双击 */
+  /* B5 点击 Q 弹：squash & stretch（styles.css §24）。
+     先蹲后跳的两段式全在关键帧里，这里只负责「掐表重放」——
+     摘类 + 强制回流 + 加类，和 .hop / .xj-burst / 印章同一个套路。
+     单击（tap 可能延迟 260ms，与形态切换同步）和双击各来一下。 */
+  function squashOrb() {
+    // 悬停的「屏一口气」（orbArm）让位：它带 both 填充、选择器特异性也比 Q 弹高，
+    // 不摘掉的话 300ms 内的点击会被它整段盖住（实测 computed animationName 停在 orbArm）。
+    // 语义上也该摘——点都点了，等待反馈不该还挂在球上。
+    delete document.body.dataset.hoverArm;
+    delete document.body.dataset.hoverExpand;
+    const orb = stageEl.querySelector(".orb");
+    if (!orb) return;
+    orb.classList.remove("xj-tap");
+    void orb.offsetWidth; // 强制回流：同一个类才能连着弹两次
+    orb.classList.add("xj-tap");
+    setTimeout(() => orb.classList.remove("xj-tap"), 460);
+  }
+
+  function handleOrbTap(ev) {    const now = Date.now();
+    // 点开的气泡给 1.5 秒宽限，别让悬停看门狗立刻收掉
+    tapGraceUntil = now + 1500;
+    const isDouble =
+      now - orbTapAt < DOUBLE_TAP_MS &&
+      orbTapXY &&
+      Math.hypot(ev.clientX - orbTapXY.x, ev.clientY - orbTapXY.y) < 12;
+    orbTapAt = isDouble ? 0 : now;
+    orbTapXY = { x: ev.clientX, y: ev.clientY };
+
+    if (isDouble) {
+      clearTimeout(orbTapTimer);
+      orbTapTimer = 0;
+      // 有待办就直接落在第一张上；没有就只是开面板。
+      // 这里不弹 Q 弹：openPanel 会把 orb 整个换掉，加了也是白发。
+      openPanel({ focusPending: true });
+      return;
+    }
+
+    const tap = () => {
+      orbTapTimer = 0;
+      // 单击：切换气泡（不改台词，避免「点一下换一句」）
+      if (S().ui.form === "collapsed") {
+        ensureLine();
+        A().setForm("bubble");
+      } else if (S().ui.form === "bubble") {
+        // 刚被悬停撑开就点上来 = 用户想「留住它」，不是想收起
+        if (Date.now() - lastHoverExpandAt < 450) {
+          // 但不收起 ≠ 没反馈：Q 弹照弹。
+          // （否则「点了没反应」：hoverTimer 300ms 和 tap 的 260ms 几乎同时到期，
+          //  悬停展开经常抢先 1ms 赢下这一帧，Q 弹会被这个 return 整个吞掉。）
+          squashOrb();
+          return;
+        }
+        // 收起后压住悬停，并要求「指针离开过一次」才允许再展开，
+        // 否则光标还在球上、300ms 后又被悬停撑开，看着像点了没反应
+        hoverBlockUntil = Date.now() + 700;
+        hoverNeedLeave = true;
+        A().setForm("collapsed");
+      }
+      // Q 弹放在形态切换之后：setForm 是同步全量重建，提前加类会被 replaceChildren
+      // 连同旧 orb 一起吞掉（实测：动画加在马上被销毁的节点上，什么都没播出来）。
+      // bubble / collapsed 两个形态都含 orb，所以切完一定加得上。
+      squashOrb();
+    };
+    if (XJ.state.pendingList(S()).length > 0) orbTapTimer = setTimeout(tap, 260);
+    else tap();
+  }
+
+  /* ============================ 拖入文件 ============================ */
+  /* B2 视线跟随：眼珠（SVG 几何版）/ 整脸（头像版）随指针微移（styles.css §24）。
+     刻意不用 rAF 循环 + JS spring：那意味着指针每动一下合成器就出一帧，
+     分层透明窗里就是一帧整窗重绘。改成「rAF 合并 + 只写两个 CSS 变量」，
+     平滑交给 CSS transition，指针停下时零开销。
+     幅度：眼珠 ±1.2 viewBox 单位（36 格，52px 球上约 ±1.7px）；整脸 ±0.7px
+     （整头位移比单颗眼珠显眼，只有眼珠的四成才不老成）。睡觉和离线不跟——
+     scaleY 已是闭眼、X 眼盖着脸，转了反而违和。
+     panel 形态鲸鱼不在场，天然跳过；拖动中、减少动画、静息、滚动中都跳过——
+     和已有的 class 对齐（dragging / reduce-motion / xj-calm / xj-scrolling），
+     CSS 侧也有对应降级（§21 transition:none、§22 同），这里双保险。 */
+  const GAZE = [
+    { sel: ".whale:not(.st-sleep):not(.st-offline) .eye-open", amp: 1.2, varX: "--eye-x", varY: "--eye-y" },
+    { sel: ".whale-av:not(.st-sleep):not(.st-offline) .whale-face", amp: 0.7, varX: "--face-x", varY: "--face-y" },
+  ];
+
+  function bindEyeTrack() {
+    let raf = 0;
+    let px = 0;
+    let py = 0;
+    const cache = new Map(); // sel -> el | null，重建后靠 isConnected 失效
+
+    const findGaze = () => {
+      const form = S().ui.form;
+      if (form === "panel") return null;
+      if (document.body.classList.contains("reduce-motion")) return null;
+      if (document.body.classList.contains("xj-calm")) return null;
+      if (document.documentElement.classList.contains("xj-scrolling")) return null;
+      if (stageEl.classList.contains("dragging")) return null;
+      for (const g of GAZE) {
+        let el = cache.get(g.sel);
+        // null 不进缓存：头像版 ↔ 几何版切换时，缓存住的 null 永远不会失效
+        //（isConnected 检查救不了它），那种切换下眼睛就「瞎」了。重查一次是微秒级。
+        if (!el || !el.isConnected) {
+          el = stageEl.querySelector(g.sel);
+          if (el) cache.set(g.sel, el);
+          else cache.delete(g.sel);
+        }
+        if (el) return { el: el, g: g };
+      }
+      return null;
+    };
+
+    const apply = () => {
+      raf = 0;
+      const hit = findGaze();
+      if (!hit) return;
+      const { el, g } = hit;
+      // 元素当前在哪：拖动时会变，所以每帧量一次；一次 getBoundingClientRect
+      // 在 rAF 合并后每帧最多一回，可接受
+      const r = el.getBoundingClientRect();
+      let dx = (px - (r.left + r.width / 2)) / 60;
+      let dy = (py - (r.top + r.height / 2)) / 60;
+      const len = Math.hypot(dx, dy);
+      if (len > 1) {
+        dx /= len;
+        dy /= len;
+      }
+      el.style.setProperty(g.varX, (dx * g.amp).toFixed(3) + "px");
+      el.style.setProperty(g.varY, (dy * g.amp).toFixed(3) + "px");
+    };
+
+    window.addEventListener(
+      "pointermove",
+      (e) => {
+        px = e.clientX;
+        py = e.clientY;
+        if (!raf) raf = requestAnimationFrame(apply);
+      },
+      { passive: true }
+    );
+    // 指针离开窗口：眼睛/脸滑回正中（CSS transition 补上这段平滑）
+    window.addEventListener("pointerleave", () => {
+      const hit = findGaze();
+      if (!hit) return;
+      hit.el.style.setProperty(hit.g.varX, "0px");
+      hit.el.style.setProperty(hit.g.varY, "0px");
+    });
   }
 
   /* ============================ 拖入文件 ============================ */
@@ -620,10 +1015,14 @@
      现在从当前 scrollTop 起、按 easeOutCubic 在固定时长内走完：
      帧率高低只影响中间采样几帧，落位时间不变。 */
   function bindSmoothScroll() {
-    const MIN_DUR = 170; // 一小格也要有这么长，太短就是「瞬移」
-    const MAX_DUR = 340; // 一屏以上也不再拖
-    const PX_PER_MS = 3.4; // 距离换时长：滚得越远走得越久（170ms ≈ 580px）
-    const MIN_STEP = 0.4; // 离目标不到这么多像素就直接落位，不再多刷一帧
+    /* 接管滚轮，但「快」比「柔」重要：原来的 170~340ms 是按软件光栅那一档调的，
+       在 240Hz 的 WebView2 里就显得拖泥带水 —— 手都走了画面还在慢慢贴。
+       现在 110~200ms、每毫秒 7px，接近 Chromium 原生平滑滚动的节奏：
+       一格滚轮 ≈ 120px ≈ 130ms 走完，既不会「一格一跳」，也不会「跟不上手」。 */
+    const MIN_DUR = 110; // 一小格也要有这么长，太短就是「瞬移」
+    const MAX_DUR = 200; // 一屏以上也不再拖
+    const PX_PER_MS = 7; // 距离换时长：滚得越远走得越久（200ms ≈ 1400px）
+    const MIN_STEP = 0.5; // 离目标不到这么多像素就直接落位，不再多刷一帧
     const LINE_PX = 16; // deltaMode=1（按行滚）时的换算
     let tweenSc = null; // 当前正在做缓动的滚动容器（拖滚动条时要把它收掉）
     const reduceMotion = () =>
@@ -862,6 +1261,27 @@
       }
     }
 
+    // 面板首页：审批卡的键盘流（D1）。
+    // 三个前提缺一不可：面板 + 首页 + 光标不在输入框 —— 不然在输入框里敲个 1 就把文件批了。
+    if (
+      s.ui.form === "panel" &&
+      s.ui.panelScreen === "home" &&
+      !s.ui.showOnboarding &&
+      !isTyping(e.target) &&
+      XJ.state.pendingList(s).length > 0
+    ) {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        movePendingCursor(e.key === "ArrowRight" ? 1 : -1);
+        return;
+      }
+      if (e.key === "1" || e.key === "2") {
+        e.preventDefault();
+        actOnCursor(e.key === "1" ? "allow" : "deny");
+        return;
+      }
+    }
+
     // 全局快捷键
     const combo = XJ.platform.comboFromEvent(e);
     if (!combo) {
@@ -909,8 +1329,9 @@
   /* ============================ Mock 事件 → 状态 ============================ */
   function onHarnessEvent(type, p) {
     const s = S();
-    // 宿主还在推进事情，说明人就在电脑前：把「多久没碰」的计时重置掉
-    if (type === "sessions.changed" || type === "approval.requested") markTouch();
+    // 注意：宿主数据变化（sessions.changed 每 1.5s 都可能来）不算「人在电脑前」——
+    // 早先这里调过 markTouch，结果静息永远进不去（gpu-process 一直吃满一个核）。
+    // 真正的「有人在用」只看 pointer / key / wheel / 可见性变化。
     switch (type) {
       case "approval.requested":
         A().approvalRequested({
@@ -1034,7 +1455,8 @@
     A().setConnection("reconnecting");
     reconnectAttempt++;
     clearTimeout(offlineTimer);
-    // 30s 内没恢复 → 离线（§4.3.4）
+    // 20s 内没恢复 → 离线（§4.3.4；2026-10-21 老大拍板从 30s 调快到 20s，
+    // 和外壳「页面加载 20s 连不上转离线态」同一个阈值，两侧体感一致）
     offlineTimer = setTimeout(() => {
       if (S().connection !== "online") {
         A().setConnection("offline");
@@ -1045,7 +1467,7 @@
           duration: 6000,
         });
       }
-    }, 30000);
+    }, 20000);
   }
 
   async function reconnect() {
@@ -1101,6 +1523,97 @@
     }
   }
 
+  /* ---------------- D1：审批键盘流 + 只读批量放行 ---------------- */
+  /** 当前键盘作用的那张卡。光标失效（那条被处理掉了）就退回列表第一条。 */
+  function pendingCursorItem(s) {
+    const list = XJ.state.pendingList(s);
+    const hit = s.ui.pendingCursor && list.find((x) => x.id === s.ui.pendingCursor);
+    return { list, item: hit || list[0] || null };
+  }
+
+  function movePendingCursor(dir) {
+    const s = S();
+    const { list, item } = pendingCursorItem(s);
+    if (list.length < 2) return;
+    const i = Math.max(0, list.indexOf(item));
+    A().setPendingCursor(list[(i + dir + list.length) % list.length].id);
+  }
+
+  /** 1 / 2 键：通过 / 拒绝当前那张卡 */
+  function actOnCursor(decision) {
+    const s = S();
+    const { item } = pendingCursorItem(s);
+    if (!item) return;
+    if (item.kind !== "approval") {
+      XJ.ui.toast({ type: "info", title: "这一条是提问", sub: "要点选项回答，1 / 2 只对审批有效" });
+      return;
+    }
+    // danger 档不认快捷键的单次确认：跟审批中心的 Y 一样要按两次
+    if (decision === "allow" && item.risk === "danger") {
+      item._onePressed = (item._onePressed || 0) + 1;
+      if (item._onePressed < 2) {
+        XJ.ui.toast({ type: "warn", title: "高危操作：再按一次 1 确认" });
+        A().patchSettings({});
+        return;
+      }
+      item._onePressed = 0;
+    }
+    decideApproval(item, decision, {});
+  }
+
+  /**
+   * 只读批量放行（D1）。
+   * 只收 risk === "read" 且还没提交的审批 —— danger / exec / write / network 一律不碰。
+   * 串行发而不是 Promise.all：宿主本来就是一条一条过，并发只会让 409 竞态更难读；
+   * 幂等键是「审批 id + 决定」，重试天然安全（§10.4）。
+   */
+  async function approveAllRead() {
+    const s = S();
+    if (s.connection === "offline") {
+      XJ.ui.toast({ type: "warn", title: "连接已断开，恢复后可操作" });
+      return;
+    }
+    const targets = XJ.state
+      .pendingList(s)
+      .filter((x) => x.kind === "approval" && x.risk === "read" && x.status === "pending");
+    if (!targets.length) return;
+
+    for (const item of targets) A().approvalSubmitting(item.id);
+
+    let ok = 0;
+    let skipped = 0;
+    for (const item of targets) {
+      try {
+        await XJ.mock.harness.decide(item.id, {
+          decision: "allow",
+          idempotencyKey: item.id + ":allow",
+          scope: "once",
+        });
+        s.metrics.approvalDecided++;
+        ok += 1;
+      } catch (err) {
+        const code = err && err.code;
+        if (code === 409 || code === 404) {
+          // 别处已经处理过 / 已经不在了：以先到的为准，不算失败
+          A().approvalResolved(item.id, "allow", "web");
+          skipped += 1;
+        } else if (code === 410) {
+          A().approvalExpired(item.id);
+          skipped += 1;
+        } else {
+          A().approvalFailed(item.id, "没发出去，重试？");
+        }
+      }
+    }
+    A().setPendingCursor(null);
+    if (ok) XJ.platform.playChime("approved");
+    XJ.ui.toast({
+      type: ok ? "success" : "warn",
+      title: ok ? "已放行 " + ok + " 项只读操作" : "一项都没放行",
+      sub: skipped ? skipped + " 项已在别处处理或已失效" : "其余档仍然逐条确认",
+    });
+  }
+
   /* ---------------- 提问（选项按钮） ---------------- */
   /**
    * 回答一个提问批次。
@@ -1141,11 +1654,17 @@
       return;
     }
     try {
+      // 先乐观改成本地「已停止」：等一个来回再变，手感上像卡住了。
+      // 真失败也没关系 —— 下一次 /xj/state 轮询（1.5s）会用宿主的事实盖回来。
       A().sessionStopped(id);
       await XJ.mock.harness.stop(id);
       XJ.ui.toast({ type: "info", title: "已停止", sub: "已改动的文件会保留，不会产生未读" });
     } catch (err) {
-      XJ.ui.toast({ type: "warn", title: "停止失败", sub: "稍后再试" });
+      XJ.ui.toast({
+        type: "warn",
+        title: "停止失败",
+        sub: (err && err.userMessage) || "稍后再试",
+      });
     }
   }
 
@@ -1215,14 +1734,150 @@
     }
   }
 
+  /* ============================ 陪伴时长（A3） ============================ */
+  /**
+   * 账本在外壳里记账，页面只做三件事：要一次 → 存进状态 → 渲染。两条桥任选其一：
+   *  - py 外壳（QWebChannel）：window.xjNative.companion() 请求，companionData 信号回推；
+   *  - C# 外壳（WebView2）：没有 QWebChannel，XJ.embed.post({type:"companion"}) 请求，
+   *    外壳经 webview message 回推同形 payload，由 embed.js 转交 app.companionData。
+   * 用回推而不是槽的同步返回值：QWebChannel 的同步返回值在不同 Qt 版本里行为不一致
+   * （有的要传回调、有的直接返回），回推两边都稳。
+   */
+  let companionWired = false;
+
+  function refreshCompanion() {
+    const native = window.xjNative;
+    if (native && typeof native.companion === "function") {
+      try {
+        native.companion();
+      } catch (e) {
+        /* 桥还没就绪：面板下次打开会再来一次 */
+      }
+      return;
+    }
+    // WebView2 外壳：postMessage 请求，响应走 embed.js → companionData
+    if (XJ.embed && XJ.embed.host === "app" && XJ.embed.post) {
+      XJ.embed.post({ type: "companion" });
+    }
+  }
+
+  function wireCompanion() {
+    const native = window.xjNative;
+    if (!native || !native.companionData || companionWired) return;
+    companionWired = true;
+    native.companionData.connect((raw) => applyCompanion(raw));
+  }
+
+  /** 外壳回推的陪伴快照：QWebChannel 信号的 JSON 字符串和 postMessage 的对象都收。 */
+  function applyCompanion(raw) {
+    let data = null;
+    try {
+      data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch (e) {
+      return;
+    }
+    if (!data) return;
+    A().setCompanion(data);
+    // 里程碑只在被取走的那一次带出来，所以这里不会重复庆祝
+    if (data.milestone) celebrateCompanion(data.milestone);
+  }
+
+  /** 里程碑：放星星 + 一句话 + toast。 */
+  function celebrateCompanion(markSec) {
+    const hours = Math.max(1, Math.round(Number(markSec) / 3600));
+    burstWhale();
+    XJ.ui.toast({
+      type: "success",
+      title: "陪你满 " + hours + " 小时了",
+      sub: XJ.lines && XJ.lines.companionLine ? XJ.lines.companionLine(hours) : "",
+    });
+  }
+
+  function burstWhale() {
+    const el = document.querySelector("#xj-stage .whale");
+    if (!el) return;
+    el.classList.remove("xj-burst");
+    void el.offsetWidth; // 强制回流：同一个 class 才能连着播两次
+    el.classList.add("xj-burst");
+    setTimeout(() => el.classList.remove("xj-burst"), 1100);
+  }
+
   /* ============================ 闲下来主动搭话 ============================ */
   let lastTouch = Date.now();
   let nudgeStrikes = 0; // 连着没人理就慢慢拉长间隔，别变骚扰
   let nudgeHideTimer = null;
 
+  /* ============================ 深睡：闲置数分钟停呼吸 ============================ */
+  /**
+   * 睡眠态下 whaleBreath 是全场最长驻的循环动画，而分层透明窗每帧都是一次整窗重绘。
+   * 门槛给 5 分钟：短于此的「歇着」多半只是在等一句话，呼吸还读得出「它在」。
+   * 判定条件三个一起：收起态（面板开着说明人在看）、在线（离线有另一套灰度）、真睡（level 5）。
+   * 单独走定时器、不进 render 闸门 —— 这个类只改 body 上一个 class，没必要惊动整棵树。
+   */
+  const DEEP_SLEEP_MS = 5 * 60000;
+  let deepAsleep = false;
+
+  function setDeepSleep(on) {
+    if (on === deepAsleep) return;
+    deepAsleep = on;
+    document.body.classList.toggle("xj-deep-sleep", on);
+  }
+
+  /* 静息：收起态闲置 20 秒后，把常驻装饰动画（光环流转 / 头像浮动 / 工作环 / zzz）按暂停。
+     实测（C# 外壳 + 240Hz 屏，gpu-process 单核占用）：装饰动画全开时 74~100%，
+     全停后 0~1.2% —— 这几条循环动画每帧都要重绘一次整窗，是「一卡一卡」的算力来源。
+     用 animation-play-state: paused 而不是 animation: none：分层窗里硬摘类会把元素拽回起点，视觉上跳一下；
+     paused 停在当前帧，摘下时从原处继续，无跳变。 */
+  const IDLE_CALM_MS = 20000;
+  let calm = false;
+
+  function setCalm(on) {
+    if (on === calm) return;
+    calm = on;
+    document.body.classList.toggle("xj-calm", on);
+  }
+
+  function tickDeepSleep() {
+    const s = S();
+    const idleFor = Date.now() - lastTouch;
+    // 静息只管「收起态」：面板/气泡开着说明人在看，动画该跑就跑
+    setCalm(s.ui.form === "collapsed" && idleFor >= IDLE_CALM_MS);
+    setDeepSleep(
+      s.ui.form === "collapsed" &&
+        s.connection === "online" &&
+        XJ.state.mainStatus(s).level === 5 &&
+        idleFor >= DEEP_SLEEP_MS
+    );
+  }
+
   function markTouch() {
     lastTouch = Date.now();
     nudgeStrikes = 0;
+    // 一有动作立刻醒：别让「呼吸停着」再挂到下一次 tick
+    setDeepSleep(false);
+    setCalm(false);
+  }
+
+  /* ============================ 节拍式转圈 ============================ */
+  /**
+   * 连续转（光环流转 + 头顶工作环）在这台机器上等于「每帧重绘一次整窗」：
+   * 实测 gpu-process 45~90% 单核，机器一忙就掉帧。
+   * 改成每 5 秒转一整圈、1.5 秒转完就停 —— 停下期间零动画零出帧（0~2%），
+   * 转动那一秒仍然读得出「在干活」。只有真在干活（st-focus）且没静息时才转。
+   */
+  const SPIN_EVERY_MS = 5000;
+  const SPIN_TICK_MS = 1500;
+  let spinOffTimer = null;
+
+  function tickSpin() {
+    if (calm) return;
+    if (!stageEl || !stageEl.querySelector(".whale.st-focus")) return;
+    // 重放动画必须先摘类再强制回流，否则浏览器认为样式没变、animation 不会重启
+    document.body.classList.remove("spin-tick");
+    void document.body.offsetWidth;
+    document.body.classList.add("spin-tick");
+    clearTimeout(spinOffTimer);
+    spinOffTimer = setTimeout(() => document.body.classList.remove("spin-tick"), SPIN_TICK_MS);
   }
 
   function nudgeWaitMs(s) {

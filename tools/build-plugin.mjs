@@ -12,6 +12,8 @@
  *   4. 演示桌面元素标记 data-remove-in-embed；
  *   5. 把 package.json 的 version 注入成 window.__XJ_BUILD__（设置里检查更新要用）。
  *
+ * 独立窗（standalone-cs）不打这里的主意：它由 tools/build-shell-cs.mjs 把整个 web/ 压进 exe。
+ *
  * 原型本身零改动，`file://` 打开仍然可用（原型永远用 app/src 的未压缩原件）。
  *
  * esbuild 查找顺序：$XJ_ESBUILD → 受管 node workspace（本机）→ 仓库 node_modules。

@@ -6,11 +6,11 @@
  *   node tools/install.mjs --dry-run     只打印将要执行的命令，不动任何东西
  *
  * 流程（6 步）：
- *   1 环境自检      node / npm / dsh / python 各就位
+ *   1 环境自检      node / npm / dsh 各就位
  *   2 构建前端      node tools/build-plugin.mjs → web/app.html + web/static/src
  *   3 打包插件      npm pack → dist/dsh-plugin-ojingjing-<版本>.tgz
  *   4 装进 DSH      dsh plugin add <tgz>（pnpm 记账，bundles 由 reconcile 自动登记）
- *   5 补齐 Python   standalone-py/.venv 没有就建，PySide6 没装就装（这是独立窗的运行时）
+ *   5 检查外壳      dist/Ojingjing-CS/Ojingjing.exe（一个 exe + 三个 DLL，零运行时依赖）
  *   6 自动拉起配置  写 ~/.dsh/ojingjing-shell.json，并回读校验
  *
  * 和 tools/install-plugin.mjs 的关系：那个是「手工复制文件 + 手改 profile/package.json」的老路子，
@@ -20,23 +20,22 @@
  * 退出码：0 成功；1 某一步失败；2 参数用错。
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 
 import {
   PACKAGE_NAME,
   LEGACY_PACKAGES,
   PROFILES_DIR,
   ROOT,
-  SHELL_DIR,
-  SHELL_SCRIPT,
+  CS_EXE,
   readShellConfig,
-  shellLaunchers,
   stopRunningShell,
   writeShellConfig,
 } from "./shell-config.mjs";
-import { pluginArgv, runDsh } from "./dsh.mjs";
+import { findDsh, isDshRunning, pluginArgv, runDsh } from "./dsh.mjs";
+import { capture, lastLine, newestFile, run as runCmd, which } from "./lib/exec.mjs";
+import { die, info, ok, say, step, warn } from "./lib/log.mjs";
 
 /* ------------------------------------------------------------------ 参数 */
 
@@ -44,10 +43,6 @@ const USAGE = `用法：node tools/install.mjs [选项]
 
   --dry-run, -n        只打印将执行的命令，不落盘
   --no-build           跳过前端构建，直接打包现有 web/
-  --skip-deps          不碰 standalone-py/.venv（只装插件本体）
-  --no-venv            同上，但语义更明确：完全不处理 Python 侧
-  --force-deps         即使 PySide6 已就绪也重跑一次 pip install
-  --mirror <url|cn>    pip 镜像；cn = 阿里云。等价于 PIP_INDEX_URL
   --no-shell-config    不写自动拉起配置（DSH 启动时不会自动弹独立窗）
   --direct             不用 dsh，直接拷进 profile 并登记 bundles（等不跑 dsh 时的退路）
   --relaunch           装完自动把 DSH Desktop 拉起来（适合关掉 DSH 才装完的场景）
@@ -59,9 +54,6 @@ const argv = process.argv.slice(2);
 const opts = {
   dryRun: false,
   build: true,
-  deps: true,
-  forceDeps: false,
-  mirror: "",
   shellConfig: true,
   direct: false,
   relaunch: false,
@@ -82,205 +74,20 @@ for (let i = 0; i < argv.length; i += 1) {
     process.exit(0);
   } else if (a === "--dry-run" || a === "-n") opts.dryRun = true;
   else if (a === "--no-build") opts.build = false;
-  else if (a === "--skip-deps" || a === "--no-venv") opts.deps = false;
-  else if (a === "--force-deps") opts.forceDeps = true;
   else if (a === "--no-shell-config") opts.shellConfig = false;
   else if (a === "--direct") opts.direct = true;
   else if (a === "--relaunch") opts.relaunch = true;
-  else if (a === "--mirror") opts.mirror = next();
-  else if (a.startsWith("--mirror=")) opts.mirror = a.slice("--mirror=".length);
   else if (a === "--profile") opts.profile = next();
   else if (a.startsWith("--profile=")) opts.profile = a.slice("--profile=".length);
   else if (a === "--dsh") opts.dsh = next();
   else if (a.startsWith("--dsh=")) opts.dsh = a.slice("--dsh=".length);
   else die(`不认识的选项：${a}（用 --help 看用法）`);
-
-  if (opts.mirror.toLowerCase() === "cn") opts.mirror = "https://mirrors.aliyun.com/pypi/simple/";
 }
 
-/* ------------------------------------------------------------------ 输出 */
-
-function say(msg = "") {
-  process.stdout.write(msg + "\n");
-}
-function step(n, total, title) {
-  say(`\n【${n}/${total}】${title}`);
-}
-function info(msg) {
-  say(`  ${msg}`);
-}
-function ok(msg) {
-  say(`  ✓ ${msg}`);
-}
-function warn(msg) {
-  say(`  ! ${msg}`);
-}
-function die(msg, code = 1) {
-  process.stdout.write(`\n✗ ${msg}\n`);
-  process.exit(code);
-}
-
-/* ------------------------------------------------------------ 跑命令 */
-
-const q = (s) => `"${s}"`;
-
-/**
- * 跑一条命令。Windows 下 npm/dsh/pnpm 都是 .cmd，Node 24 起不允许 shell:false 直接 spawn .cmd，
- * 所以统一过 shell，并且把每个参数加引号（本机路径里有「新建文件夹」这种中文，也可能有空格）。
- * stdio 走 inherit，不接管管道：接管管道在受限环境里会 EPERM。
- */
-function run(args, { allowFail = false, env = {} } = {}) {
-  const line = args.map(q).join(" ");
-  if (opts.dryRun) {
-    info(`$ ${line}`);
-    return { status: 0, out: "" };
-  }
-  const r = spawnSync(line, {
-    shell: true,
-    cwd: ROOT,
-    encoding: "utf8",
-    stdio: "inherit",
-    windowsHide: true,
-    env: { ...process.env, ...env },
-  });
-  if (r.error) die(`命令起不来：${line}\n  ${r.error.message}`);
-  if (r.status !== 0 && !allowFail) {
-    die(`命令失败（退出码 ${r.status}）：\n  ${line}`);
-  }
-  return { status: r.status ?? 1, out: "" };
-}
-
-/**
- * 只想知道某条命令能不能跑通（探测解释器、探测 dsh）。输出落到临时文件而不是管道：
- * 管道在沙箱/受限终端里可能 EPERM，临时文件两边都能用。
- */
-let probeSeq = 0;
-function probe(args) {
-  const line = args.map(q).join(" ");
-  if (opts.dryRun) {
-    info(`$ ${line}`);
-    return { ok: true, out: "", dry: true };
-  }
-  const tmp = path.join(os.tmpdir(), `xj-probe-${process.pid}-${(probeSeq += 1)}.log`);
-  let fd = "ignore";
-  try {
-    fd = fs.openSync(tmp, "w");
-  } catch {
-    /* 落不了盘就只靠退出码 */
-  }
-  const r = spawnSync(line, {
-    shell: true,
-    cwd: ROOT,
-    stdio: ["ignore", fd, fd],
-    windowsHide: true,
-  });
-  if (fd !== "ignore") {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      /* ignore */
-    }
-  }
-  let out = "";
-  try {
-    out = fs.readFileSync(tmp, "utf8").trim();
-  } catch {
-    /* ignore */
-  }
-  try {
-    fs.rmSync(tmp, { force: true });
-  } catch {
-    /* ignore */
-  }
-  return { ok: r.status === 0, out, error: r.error };
-}
-
-/** 取多行输出的最后一行非空内容（探针常把版本打在最后一行）。 */
-function lastLine(text) {
-  return String(text ?? "")
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .pop() ?? "";
-}
-
-/**
- * 按 PATH + PATHEXT 找可执行文件，纯 JS 扫目录，不起子进程。
- * 比 where.exe 可靠：受限环境里 spawn 捕获输出会 EPERM，而这里根本不需要 spawn。
- */
-function which(names) {
-  const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
-  for (const name of names) {
-    const lower = name.toLowerCase();
-    const styled = exts.some((e) => lower.endsWith(e.toLowerCase()));
-    for (const dir of dirs) {
-      const base = path.join(dir, name);
-      const tries = styled ? [base] : [base, ...exts.map((e) => base + e.toLowerCase()), ...exts.map((e) => base + e)];
-      for (const candidate of tries) {
-        try {
-          if (fs.statSync(candidate).isFile()) return candidate;
-        } catch {
-          /* 没这个文件，继续 */
-        }
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * DSH Desktop 是不是正开着。开着的话 profile 被它独占锁住，dsh plugin add 会失败，
- * 所以在花时间构建/打包之前就先告诉用户。
- */
-function isDshRunning() {
-  const r = probe(["tasklist", "/FI", "IMAGENAME eq DSH Desktop.exe", "/NH"]);
-  if (!r.ok) return null; // 探测不出来就返回未知，不要瞎断言
-  return /DSH Desktop\.exe/i.test(r.out);
-}
-
-/**
- * 读最近一次 pnpm 操作的日志（plugin-manager 会把每次 add/remove 的输出留在
- * `<profile>/.plugin-manager/logs/operation-<id>/pnpm.log`）。
- * pnpm 失败时真正的报错只在这份日志里 —— 外面看到的往往只有一句 exit code 1。
- */
-function lastPnpmLog(profileDir) {
-  const logs = path.join(profileDir, ".plugin-manager", "logs");
-  try {
-    const newest = fs
-      .readdirSync(logs)
-      .map((name) => path.join(logs, name, "pnpm.log"))
-      .filter((p) => fs.existsSync(p))
-      .map((p) => ({ p, t: fs.statSync(p).mtimeMs }))
-      .sort((a, b) => b.t - a.t)[0];
-    if (!newest) return null;
-    const text = fs.readFileSync(newest.p, "utf8").trim();
-    return { file: newest.p, text: text || "（这次操作 pnpm 什么都没输出）" };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * DSH Desktop 自己生成的 dsh shim（host-commands/generations/<hash>/bin/dsh.cmd）。
- * 它带 `runCli({ manageDesktopProfile: true })`，是唯一被允许操作 desktop profile 的入口。
- * 每次 DSH 启动会生成新的一代，所以取最新那个。
- */
-function desktopDshShim() {
-  const gens = path.join(process.env.APPDATA ?? "", "DSH Desktop", "host-commands", "desktop", "generations");
-  if (!fs.existsSync(gens)) return null;
-  try {
-    const newest = fs
-      .readdirSync(gens)
-      .map((name) => path.join(gens, name, "bin", "dsh.cmd"))
-      .filter((p) => fs.existsSync(p))
-      .map((p) => ({ p, t: fs.statSync(p).mtimeMs }))
-      .sort((a, b) => b.t - a.t)[0];
-    return newest?.p ?? null;
-  } catch {
-    return null;
-  }
-}
+/* ------------------------------------------------------------------ 输出与跑命令 */
+/* say/step/info/ok/warn/die 在 lib/log.mjs；capture/run/which/lastLine/newestFile 在 lib/exec.mjs。
+   本地只包一层 run：把 --dry-run 默认带上（lib/exec.run 不认本脚本的 opts）。 */
+const run = (args, extra = {}) => runCmd(args, { dryRun: opts.dryRun, ...extra });
 
 /** 找 DSH Desktop.exe，--relaunch 用。 */
 function findDshExe() {
@@ -293,6 +100,19 @@ function findDshExe() {
     path.join(pf86, "DSH Desktop", "DSH Desktop.exe"),
   ];
   return candidates.find((p) => p && fs.existsSync(p)) ?? null;
+}
+
+/**
+ * 读最近一次 pnpm 操作的日志（plugin-manager 会把每次 add/remove 的输出留在
+ * `<profile>/.plugin-manager/logs/operation-<id>/pnpm.log`）。
+ * pnpm 失败时真正的报错只在这份日志里 —— 外面看到的往往只有一句 exit code 1。
+ */
+function lastPnpmLog(profileDir) {
+  const logs = path.join(profileDir, ".plugin-manager", "logs");
+  const newest = newestFile(logs, (name) => path.join(logs, name, "pnpm.log"));
+  if (!newest) return null;
+  const text = fs.readFileSync(newest, "utf8").trim();
+  return { file: newest, text: text || "（这次操作 pnpm 什么都没输出）" };
 }
 
 /* ------------------------------------------------------------------ 主流程 */
@@ -325,6 +145,7 @@ try {
 
   // dsh 的选法很关键：只有 DSH Desktop 自己生成的 host-commands shim 才允许写 desktop profile。
   // 纯 CLI 版 dsh 有静态校验，会一律拒绝 desktop —— 所以优先找 shim，PATH 上的只作兜底。
+  // （findDsh 就是这个顺序：先 generations 里最新的 shim，再 PATH。）
   let dshCmd = "";
   let dshFrom = "";
   if (opts.direct) {
@@ -333,17 +154,12 @@ try {
     dshCmd = path.resolve(opts.dsh);
     dshFrom = "--dsh 指定";
   } else {
-    dshCmd = desktopDshShim() ?? "";
-    dshFrom = "DSH Desktop host-commands";
-    if (!dshCmd) {
-      dshCmd = which(["dsh"]) ?? "";
-      dshFrom = "PATH";
-      if (dshCmd) {
-        warn(
-          "PATH 上的 dsh 不是 DSH Desktop 生成的 shim。如果它不是那一份，",
-        );
-        warn("`dsh plugin --profile desktop` 会被拒绝（纯 CLI 版的静态校验）。");
-      }
+    const found = findDsh();
+    dshCmd = found?.cmd ?? "";
+    dshFrom = found?.from ?? "";
+    if (dshCmd && dshFrom === "PATH") {
+      warn("PATH 上的 dsh 不是 DSH Desktop 生成的 shim。如果它不是那一份，");
+      warn("`dsh plugin --profile desktop` 会被拒绝（纯 CLI 版的静态校验）。");
     }
   }
   if (opts.direct) {
@@ -364,7 +180,7 @@ try {
     if (!fs.existsSync(dshCmd)) die(`dsh 不在：${dshCmd}`);
     ok(`dsh ${dshCmd}（来自 ${dshFrom}）`);
     if (opts.dryRun) info("（dry-run 不真的调 dsh，下面只打印命令）");
-    const dshVersion = opts.dryRun ? null : probe([dshCmd, "--version"]);
+    const dshVersion = opts.dryRun ? null : capture([dshCmd, "--version"], { tag: "xj-dsh" });
     if (dshVersion && !dshVersion.ok) {
       die(`dsh 跑不起来，先修好它：\n  ${dshCmd} --version\n${dshVersion.out}`);
     }
@@ -414,12 +230,8 @@ try {
     }
   }
 
-  // 整条命令链要联网：npm pack 不联网，pnpm 装 tarball 一般也不联网（本包零依赖），
-  // 但 venv 里的 PySide6 首次装要下载。这里只提醒，不阻断。
-  if (opts.deps && !opts.dryRun) {
-    const venvPyw = path.join(SHELL_DIR, ".venv", "Scripts", "pythonw.exe");
-    if (!fs.existsSync(venvPyw)) info("standalone-py/.venv 还没就绪，第 5 步会建 venv 并下载 PySide6（PySide6 6.12 实测约 700MB，慢）");
-  }
+  // 整条命令链要联网：npm pack 不联网，pnpm 装 tarball 一般也不联网（本包零依赖）。
+  // C# 外壳的 DLL 从 NuGet 取，但那是最初构建时的事，安装不碰。这里不需要任何提示。
 
   /* ---------------------------------------------------- 2 构建前端 */
   step(2, TOTAL, "构建前端（app/src → web/）");
@@ -572,78 +384,15 @@ try {
     }
   }
 
-  /* ---------------------------------------------------- 5 Python 依赖 */
-  step(5, TOTAL, "补齐独立窗的 Python 依赖（standalone-py/.venv）");
-  if (!opts.deps) {
-    warn("--skip-deps：不动 venv。独立窗要自己装 PySide6 才能开。");
+  /* ---------------------------------------------------- 5 外壳运行时 */
+  step(5, TOTAL, "检查独立窗外壳");
+  if (fs.existsSync(CS_EXE)) {
+    // C# + WebView2 外壳：一个 exe（页面已内嵌）+ 三个 DLL，没有运行时依赖要装。
+    const kb = (fs.statSync(CS_EXE).size / 1024).toFixed(0);
+    ok(`外壳已就绪：${path.relative(ROOT, CS_EXE)}（${kb} KB）`);
   } else {
-    const venvDir = path.join(SHELL_DIR, ".venv");
-    const venvPy = path.join(venvDir, "Scripts", "python.exe");
-    const reqPath = path.join(SHELL_DIR, "requirements.txt");
-
-    if (!fs.existsSync(venvPy)) {
-      // 没 venv：找一个基础解释器来建
-      const bases = [[which(["py"]), "-3"], [which(["python"])]]
-        .filter(([c]) => Boolean(c))
-        .map(([c, ...rest]) => [c, ...rest]);
-      let base = null;
-      for (const [cmd, ...rest] of bases) {
-        const args = [cmd, ...rest, "-c", "import sys;print(sys.version)"];
-        if (probe(args).ok) {
-          base = [cmd, ...rest];
-          break;
-        }
-      }
-      if (!base) die("找不到可用的 Python 3。装 Python 3.10+ 后重跑，或用 --skip-deps 跳过。");
-
-      info(`用 ${base.join(" ")} 建 venv：${path.relative(ROOT, venvDir)}`);
-      run([...base, "-m", "venv", venvDir]);
-      if (!opts.dryRun && !fs.existsSync(venvPy)) die(`venv 建完却没看到 ${venvPy}`);
-    } else {
-      ok(`venv 已存在：${path.relative(ROOT, venvDir)}`);
-    }
-
-    if (!fs.existsSync(reqPath)) die(`缺少 ${reqPath}`);
-
-    // --no-cache-dir：pip 的下载缓存默认落在 %LOCALAPPDATA%\pip，几百 MB 且不可再生利用，
-    // 关掉之后 venv 里只有包本体（PySide6 6.12 本体就约 670MB，缓存是纯浪费）。
-    const pipArgs = [venvPy, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "-r", reqPath];
-    if (opts.mirror) pipArgs.push("-i", opts.mirror);
-
-    if (opts.dryRun) {
-      info("（dry-run 不探测 PySide6；真跑时下面这条失败就会走 pip install）");
-      probe([venvPy, "-c", "import PySide6;print(PySide6.__version__)"]);
-      run(pipArgs);
-    } else {
-      const pyside = probe([venvPy, "-c", "import PySide6;print(PySide6.__version__)"]);
-      if (pyside.ok && !opts.forceDeps) {
-        ok(`PySide6 已就绪（${lastLine(pyside.out)}），跳过 pip install`);
-      } else {
-        if (pyside.ok) info(`--force-deps：PySide6 ${lastLine(pyside.out)} 已装，仍按 requirements 重跑`);
-        else info("PySide6 还没装，开始 pip install（首次约 700MB，慢）");
-        run(pipArgs);
-
-        const after2 = probe([venvPy, "-c", "import PySide6;print(PySide6.__version__)"]);
-        if (!after2.ok) {
-          die(
-            [
-              "pip install 跑完了，但 import PySide6 还是失败：",
-              after2.out || "(没有输出)",
-              "常见原因：venv 建坏了（删掉 standalone-py/.venv 重跑本脚本）、磁盘满、或镜像没有这个包。",
-            ].join("\n"),
-          );
-        }
-        ok(`PySide6 ${lastLine(after2.out)}`);
-      }
-    }
-
-    // pythonw 是宿主拉起独立窗用的解释器，缺了自动拉起会静默跳过
-    const venvPyw = path.join(venvDir, "Scripts", "pythonw.exe");
-    if (!opts.dryRun) {
-      if (fs.existsSync(venvPyw)) ok(`pythonw 就位：${venvPyw}`);
-      else warn(`没有 ${venvPyw}，DSH 自动拉起独立窗会跳过（多半是 venv 建法不对）`);
-    }
-    if (!fs.existsSync(path.join(SHELL_DIR, SHELL_SCRIPT))) warn(`缺少 ${SHELL_SCRIPT}，独立窗起不来`);
+    warn("没找到 dist/Ojingjing-CS/Ojingjing.exe —— DSH 里的小组件照常能跑，但不会自动弹独立窗");
+    warn("要独立窗就跑一次：node tools/build-shell-cs.mjs");
   }
 
   /* ---------------------------------------------------- 6 自动拉起配置 */
@@ -651,22 +400,17 @@ try {
   if (!opts.shellConfig) {
     warn("--no-shell-config：没写。要恢复就重跑一次不带这个参数。");
   } else if (opts.dryRun) {
-    const launchers = shellLaunchers();
     info(`$ 写 ${path.join(process.env.USERPROFILE ?? "", ".dsh", "ojingjing-shell.json")}`);
-    info(`  解释器候选：${launchers.length ? launchers.join(" | ") : "（一个都没找到，自动拉起会被跳过）"}`);
+    info(`  外壳：${path.relative(ROOT, CS_EXE)}（exe 直接拉起）`);
   } else {
-    const payload = writeShellConfig();
+    writeShellConfig();
     const back = readShellConfig();
-    if (!back || back.autoLaunch !== true || !Array.isArray(back.launchers)) {
+    if (!back || back.autoLaunch !== true || !back.exe) {
       die("自动拉起配置写完回读不对，检查 ~/.dsh/ojingjing-shell.json");
     }
     ok(`~/.dsh/ojingjing-shell.json（autoLaunch=${back.autoLaunch}）`);
-    if (back.launchers.length === 0) {
-      warn("没找到任何 pythonw.exe —— 自动拉起会被插件跳过。装好 Python/PySide6 后重跑本脚本。");
-    } else {
-      ok(`解释器候选 ${back.launchers.length} 个，首选 ${back.launchers[0]}`);
-    }
-    if (!fs.existsSync(payload.shellDir)) warn(`shellDir 不存在：${payload.shellDir}`);
+    ok(`外壳程序：${back.exe}`);
+    if (!fs.existsSync(back.exe)) warn(`配置里的 exe 不存在：${back.exe}（先跑 node tools/build-shell-cs.mjs）`);
   }
 
   /* ---------------------------------------------------- 收尾 */
@@ -696,8 +440,12 @@ try {
     say("  1. 完全退出 DeepSeek Harness Desktop，再重新打开 —— 插件在进程启动时加载。");
   }
   say("  2. 打开后右下角应该出现哦鲸鲸；没出现就是没加载，看 DSH 的插件日志。");
-  say("  3. 想单独开着置顶窗：双击 standalone-py 下的「启动哦鲸鲸.cmd」。");
-  say("  4. 想打 Windows 分发版（绿色 exe）：node tools/build-exe.mjs。");
+  if (fs.existsSync(CS_EXE)) {
+    say(`  3. 想单独开着置顶窗：双击 ${path.relative(ROOT, CS_EXE)}（页面已内嵌，DSH 没开也能用）。`);
+  } else {
+    say("  3. 还没有独立窗：node tools/build-shell-cs.mjs 打一个（约 1.17MB）。");
+  }
+  say("  4. 想重新打外壳：node tools/build-shell-cs.mjs。");
   say("");
   say("回滚：node tools/uninstall.mjs");
 } catch (error) {

@@ -8,77 +8,13 @@
    说明它的 rAF 只是跟着 vsync 走，并不反映窗口侧的真实重绘；要判断滚动是否顺，
    只能在真机（Qt 外壳）里看，或者看 QtWebEngineProcess 的 CPU 占用。
    ========================================================================== */
-import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { connect, launchChrome, sleep } from "./cdp.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PORT = 9339;
-const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-
-const launch = () => {
-  const profile = mkdtempSync(join(tmpdir(), "xj-scroll-"));
-  return spawn(
-    CHROME,
-    [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-gpu-compositing",
-      "--disable-accelerated-2d-canvas",
-      "--hide-scrollbars",
-      "--no-first-run",
-      "--disable-features=Translate",
-      "--force-device-scale-factor=1",
-      `--remote-debugging-port=${PORT}`,
-      `--user-data-dir=${profile}`,
-      "--window-size=1440,900",
-      "about:blank",
-    ],
-    { stdio: "ignore" }
-  );
-};
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function waitTarget(timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-      const page = list.find((t) => t.type === "page");
-      if (page?.webSocketDebuggerUrl) return page;
-    } catch {}
-    await sleep(200);
-  }
-  throw new Error("CDP 超时");
-}
-
-function connect(url) {
-  return new Promise((res, rej) => {
-    const ws = new WebSocket(url);
-    const pending = new Map();
-    let seq = 0;
-    ws.addEventListener("open", () => {
-      const send = (method, params = {}) =>
-        new Promise((resolveP) => {
-          const id = ++seq;
-          pending.set(id, resolveP);
-          ws.send(JSON.stringify({ id, method, params }));
-        });
-      ws.addEventListener("message", (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.id && pending.has(msg.id)) {
-          pending.get(msg.id)(msg);
-          pending.delete(msg.id);
-        }
-      });
-      res({ send });
-    });
-    ws.addEventListener("error", rej);
-  });
-}
 
 /** 注入采样：rAF 记帧间隔；同时由外面持续发滚轮事件 */
 const START_SAMPLER = `(() => {
@@ -149,9 +85,11 @@ async function measure(send, label, prepare) {
 }
 
 async function main() {
-  const proc = launch();
-  const target = await waitTarget();
-  const { send } = await connect(target.webSocketDebuggerUrl);
+  const chrome = launchChrome(PORT, {
+    prefix: "xj-scroll-",
+    extraFlags: ["--disable-gpu-compositing", "--disable-accelerated-2d-canvas", "--disable-features=Translate"],
+  });
+  const { send, close } = await connect(PORT);
   await send("Page.enable");
   await send("Runtime.enable");
   await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -184,7 +122,8 @@ async function main() {
   );
 
   await send("Browser.close").catch(() => {});
-  proc.kill();
+  close();
+  chrome.close();
   process.exit(0);
 }
 

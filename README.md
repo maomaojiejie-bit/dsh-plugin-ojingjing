@@ -9,8 +9,9 @@
 > 面板设置里的「检查更新」比的就是那里的 tag。装法见下文[安装](#安装)，发版流程见[发版](#发版推-github--release)。
 
 > **仓库根目录本身就是一个 DSH bundle 插件包**（`package.json` + `cordis.patch.yml` + `lib/` + `web/`）。
-> `app/`（可点击原型）、`standalone-py/`（独立桌面窗）、`tools/`（构建与校验）是随仓库带的配套内容，
-> 不在 npm 包的 `files` 白名单里。装上插件后，浮窗用同一份前端源码，一条 `/xj/*` 接口喂真数据。
+> `app/`（可点击原型）、`standalone-cs/`（独立桌面窗，C# + WebView2）、
+> `tools/`（构建与校验）是随仓库带的配套内容，不在 npm 包的 `files` 白名单里。
+> 装上插件后，浮窗用同一份前端源码，一条 `/xj/*` 接口喂真数据。
 
 ---
 
@@ -22,10 +23,13 @@
 |---|---|---|---|
 | **DSH 插件** | 仓库根（`lib/` + `web/`） | 数据从哪来：汇总会话、接管审批、提供 `/xj/*` 路由 | [安装](#安装) → [`PLUGIN.md`](PLUGIN.md) |
 | **可点击原型** | [`app/`](app/) | 不装任何东西就能点完所有交互 | 双击 [`app/index.html`](app/index.html) → [`app/README.md`](app/README.md) |
-| **独立桌面窗** | [`standalone-py/`](standalone-py/) | 窗口不跟着 DSH 走：无边框、置顶、逐像素透明 | [`standalone-py/README.md`](standalone-py/README.md) |
+| **独立桌面窗** | [`standalone-cs/`](standalone-cs/) | 窗口不跟着 DSH 走：无边框、置顶、逐像素透明 | [`standalone-cs/README.md`](standalone-cs/README.md) |
 
-插件负责把 DSH 的真状态喂给浮窗，Python 外壳负责把同一个页面画成一个真正的桌面窗口，
+插件负责把 DSH 的真状态喂给浮窗，独立窗负责把同一个页面画成一个真正的桌面窗口，
 两者只通过 `127.0.0.1` 上的 `/xj/*` 说话。
+
+> **为什么换了外壳**：C# + WebView2 版是 **1.17 MB** 的单 exe（PySide6 版 329 MB，已整条删除），
+> 同一台 240Hz 机器上折叠态跑满 240fps、单核占用约为旧版的一半，逐像素透明也照旧成立。
 
 ## 上来先看（零安装）
 
@@ -62,8 +66,8 @@ node tools/install.mjs --relaunch   # 装完自动把 DSH 拉起来
 | 2 | 构建前端：`app/src` → `web/`（见[构建链路](#构建链路)） |
 | 3 | 打包：`npm pack` → `dist/dsh-plugin-ojingjing-<版本>.tgz`（缓存写在仓库的 `.npm-cache/`） |
 | 4 | **装进 DSH**：`dsh plugin add <tgz>`（走 DSH Desktop 自带的 dsh），补登记 `dsh.profile.bundles`，落地校验 |
-| 5 | 装 Python 依赖：没有 `standalone-py/.venv` 就建一个，再 `pip install -r requirements.txt`（PySide6，约 300MB，已装则跳过） |
-| 6 | 写自动拉起配置 `~/.dsh/ojingjing-shell.json`（DSH 起来时自动弹独立窗） |
+| 5 | 检查独立窗外壳：`dist/Ojingjing-CS/Ojingjing.exe`（一个 exe + 三个 DLL，零运行时依赖；没有就先跑 `node tools/build-shell-cs.mjs`） |
+| 6 | 写自动拉起配置 `~/.dsh/ojingjing-shell.json`（DSH 起来时自动弹独立窗，里面只写 `exe`） |
 
 装完**重启 DSH** 才生效（宿主启动时按层栈加载 bundle）。
 
@@ -72,7 +76,7 @@ node tools/install.mjs --relaunch   # 装完自动把 DSH 拉起来
 ```powershell
 node tools/uninstall.mjs            # 摘插件 + 去登记 + 停独立窗 + 删自动拉起配置
 node tools/uninstall.mjs --dry-run  # 先看看会动什么
-node tools/uninstall.mjs --purge    # 连 .venv / data（含 API key）/ 日志 / dist 一起清
+node tools/uninstall.mjs --purge    # 连外壳 data（含偏好和 API key）/ 日志 / dist 一起清
 ```
 
 或双击 [`从DSH卸载.cmd`](从DSH卸载.cmd)。
@@ -143,10 +147,11 @@ pnpm 对「同一个 spec 的 tarball」是幂等的——它只比对 `package.
 ```
 app/src/**  ──┬─→ web/static/src/**      （esbuild minify + 剥离 mock/devbar，19 个文件）
               └─→ web/app.html           （app/index.html 改路径 + 挂 embed + 删原型脚本）
-standalone-py  ──→  直接加载 http://127.0.0.1:<port>/xj/app.html?embed=1&host=py
+                        │
+                        └─→ payload.zip → 嵌进 standalone-cs 的 exe（独立窗自带页面）
 ```
 
-`node tools/build-plugin.mjs` 做四件事：
+`node tools/build-plugin.mjs` 做五件事：
 
 1. 把 `app/src/` 下的 `js|css|svg|png|webp|woff2` 复制到 `web/static/src/`（位图和 data-URI 原样拷）；
 2. JS/CSS 过 esbuild minify（**可选依赖**：装在受管 node workspace 或仓库 `node_modules` 里，
@@ -154,13 +159,40 @@ standalone-py  ──→  直接加载 http://127.0.0.1:<port>/xj/app.html?embed
 3. **embed 剥离**：`mock.js` / `devbar.js` 是原型专用（假 Harness + 评审控制台），插件包里整个删掉——
    app.js 里 devbar 的调用点有 `XJ.embed` 守卫，`XJ.mock` 命名空间由 embed.js 兜底；
 4. 把 `app/index.html` 里的相对路径 `src/…` 重写成 `/xj/static/src/…`、删掉原型脚本的 `<script>` 行、
-   挂 `embed.css` / `embed.js`、改 `<title>`、给原型提示条打 `data-remove-in-embed` 标记。
+   挂 `embed.css` / `embed.js`、改 `<title>`、给原型提示条打 `data-remove-in-embed` 标记；
+5. 把 `package.json` 的 `version` 注入成 `window.__XJ_BUILD__`（设置里「检查更新」拿它比 Release tag）。
+
+独立窗那边不归这个脚本管：`tools/build-shell-cs.mjs` 会把整个 `web/` 压成 `payload.zip` 塞进 exe（见下节）。
 
 所以原型和插件页面共用同一份源码，但插件包里的页面是「瘦身版」；`file://` 打开原型依旧可用
 （原型永远用 `app/src` 的未压缩原件，不受构建影响）。
 
 > **`app/src/` 是唯一事实来源。** `web/static/src/`、`web/app.html`、`web/embed.*`、`web/icon.png`
 > 都是产物，改页面只改 `app/src/` 然后重跑构建——直接改 `web/` 会在下次构建时被覆盖。
+
+## 独立窗怎么拿到页面（A1）
+
+以前独立窗的页面是从 DSH 的 `http://127.0.0.1:43120/xj/app.html` 加载的——DSH 没开或插件没装，
+窗口一片白。现在**整份页面就住在 exe 里**：
+
+```
+web/**  ──(build-shell-cs)──→ payload.zip ──(/resource:)──→ Ojingjing.exe
+                                                              │ 启动时解到
+                                                              │ <配置目录>\web\<版本-时间戳>\
+                                                              ▼
+                       https://ojingjing.local/xj/app.html?embed=1&host=app
+                              （SetVirtualHostNameToFolderMapping 挂的虚拟主机）
+```
+
+- **为什么用虚拟主机而不是 `file://`**：`file://` 下 `fetch`、`localStorage` 都是不透明源，页面刚启动就炸；
+  虚拟主机是正经 https，`app.html` 里的 `/xj/...` 绝对路径一行都不用改。
+- **两个来源**：先探活 `http://127.0.0.1:<port>/xj/app.html`（loopback 毫秒级回）。
+  2xx → 导航插件服务器（真数据）；失败 → 导航内置副本。**内置副本就是同一个面板**，
+  双击球照样能展开、翻设置、看陪伴时长，只是没有会话数据。
+- **页面已经在、服务器又挂了**：探活失败只把节奏放慢到 4s，**绝不覆盖已有页面**，
+  另外推一条 `{type:"connection",state:"offline"}`，前端自己切黑白球 + 灰虚线环。服务器回来就切回去。
+- **不直接盲导航的原因**：失败导航要 ~2.2s 才回 `NavigationCompleted`，中间闪的是 Chromium 自己的
+  `ERR_CONNECTION_REFUSED` 错误页。
 
 ## 仓库地图
 
@@ -170,8 +202,6 @@ ojingjing-widget/
 ├── 安装到DSH.cmd            双击安装（纯 ASCII：cmd 按 OEM 码页读批处理，中文会乱码）
 ├── 从DSH卸载.cmd            双击卸载
 ├── 发布到GitHub.cmd          双击发版（= node tools/release.mjs：推代码 → 打 tag → 建 Release → 传 tarball）
-├── Ojingjing.spec            PyInstaller 打包独立窗 exe（tools/build-exe.mjs 一条龙：构建+瘦身+盘点）
-├── OjingjingDebug.spec       同上，带控制台版
 ├── lib/index.js            ② 宿主插件（单文件）：apply(root) → session/event · approval/request · /xj/*
 ├── web/                    ② 插件静态资源（app.html、static/ 是 build-plugin 的产物）
 │   ├── app.html  embed.js  embed.css  inject.js  icon.png
@@ -181,13 +211,21 @@ ojingjing-widget/
 │   ├── dev-whale.html          鲸鱼五表情校验页（大 / 中 / 小并排看）
 │   ├── README.md               前端说明书（§编号、台词池、四形态规格）
 │   └── src/**                  20 个 JS/CSS（约 9.3k 行）+ avatar.webp
-├── standalone-py/          ③ PySide6 + QtWebEngine 桌面外壳
-│   ├── ojingjing_py.py         窗口 / 置顶 / 热键 / 托盘 / 截图 / 设置 / 渲染模式
-│   ├── 启动哦鲸鲸.cmd           日常双击启动（GBK 编码）
-│   ├── 停止哦鲸鲸.cmd           按命令行匹配结束进程（GBK 编码）
-│   └── requirements.txt        PySide6>=6.6
+├── standalone-cs/          ③ C# + WebView2 桌面外壳（当前主用，产物 1.17MB）
+│   ├── OverlayForm.cs          窗口骨架：透明置顶 / 热键 / 显示时机 / 尺寸协商 / 位置记忆 / 打开 DSH
+│   ├── OverlayForm.Load.cs     页面加载：探活导航 + 内置页面解包 + 虚拟主机
+│   ├── OverlayForm.Shot.cs     截图提问：藏窗 → 抓屏 → 框选 → 卡片 → 发送/优化
+│   ├── OverlayForm.Bridge.cs   页面消息分发、postMessage、指针信号、手写 JSON 工具
+│   ├── Settings.cs             配置目录三级回退 + settings.json / window.json
+│   ├── SettingsForm.cs         外壳设置窗（端口 / 热键 / 截图模式 / 高帧率 / 自启 / 视觉模型）
+│   ├── Capture.cs  ShotApi.cs   抓屏与框选 / 挑会话 + POST /xj/prompt + 视觉模型「优化」
+│   ├── Native.cs  Program.cs    Win32 导入 / 单实例 + 托盘 + DSH 退出跟随
+│   ├── sdk/                     WebView2 SDK 的三个 DLL（编译用，不入库）
+│   └── README.md                外壳说明（功能、体积、环境变量、消息协议）
 ├── assets/icon-source.png  头像原图（tools/prep-avatar.py 的输入）
-├── releases/v0.4.0.md      GitHub Release 的发布说明（版本号与 tag 同名，tools/release.mjs 直接取这份）
+├── releases/v0.4.1.md      GitHub Release 的发布说明（版本号与 tag 同名，tools/release.mjs 直接取这份）
+├── docs/                   设计方案与调研（独立窗流畅度方案.md 等，非构建输入）
+├── ROADMAP.md              v0.5 任务清单与完成度
 ├── .shots/                 自检截图：verify-avatar-app.png · verify-whale-svg.png
 ├── tools/                  构建 / 安装 / 打包 / 截图 / 校验（见[工具链](#工具链)）
 │   └── dev/                一次性探针（probe-*、cdp-eval、qt-interact、wheel-check…）
@@ -228,6 +266,7 @@ README.md  LICENSE
 | `POST /xj/decide` | 通过 / 拒绝某个审批（带幂等键，撞 409 表示已在别处处理） |
 | `POST /xj/answer` | 回答 Agent 的提问（带选项的那种）：整批 `{id, answers:[{id,selected,custom}]}` 或单问 `{id, selected, custom}` |
 | `POST /xj/prompt` | 截图提问：图片以 data URL 内联，投进指定会话的 `prompt()` |
+| `POST /xj/stop` | 停止当前这一轮：`sessionController.cancel({sessionId})`，只取消正在跑的 turn，排队里的消息保留 |
 | `GET /xj/app.html` | 浮窗页面本体 |
 | `GET /xj/static/*` | 页面静态资源 |
 | `GET /xj/embed.js` `embed.css` `inject.js` | 嵌入态脚本与样式 |
@@ -274,6 +313,7 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
 | 脚本 | 作用 |
 |---|---|
 | [`tools/build-plugin.mjs`](tools/build-plugin.mjs) | `app/index.html` + `app/src/` → `web/app.html` + `web/static/src/` |
+| [`tools/build-shell-cs.mjs`](tools/build-shell-cs.mjs) | 编译 C# 外壳 → `dist/Ojingjing-CS/`（产物约 1.18MB，其中 exe 299KB 含内嵌页面） |
 | [`tools/install.mjs`](tools/install.mjs) | **装进 DSH**：构建 → 打包 → `dsh plugin add` → venv 依赖 → 自动拉起配置，六步一遍过 |
 | [`tools/uninstall.mjs`](tools/uninstall.mjs) | 卸载：摘插件 + 去登记 + 停独立窗 + 删自动拉起配置（`--purge` 连 venv/data/日志一起清） |
 | [`tools/shell-config.mjs`](tools/shell-config.mjs) | 读写 `~/.dsh/ojingjing-shell.json`、探测/停止自动拉起的独立窗 |
@@ -285,18 +325,22 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
 | [`tools/test-shell-launch.mjs`](tools/test-shell-launch.mjs) | 验证「DSH 起来 → 自动拉起独立窗」这条联动 |
 | [`tools/check-plugin.mjs`](tools/check-plugin.mjs) | 探测运行中的宿主：`/xj/inject.js`、`/xj/app.html`、`/xj/state` |
 | [`tools/shoot.mjs`](tools/shoot.mjs) | 无头 Chrome + CDP 拍「交互后」截图 → `docs/screenshots/` |
-| [`tools/compose-shot.py`](tools/compose-shot.py) | 把 Qt 窗口合成进全屏截图（分层窗口抓不到，只能合成） |
 | [`tools/prep-avatar.py`](tools/prep-avatar.py) | `assets/icon-source.png` → `app/src/avatar.webp` + `avatar.js`（WebP data URL，比 PNG 小约 78%） |
+| [`tools/make-ico.py`](tools/make-ico.py) | `assets/icon-source.png` → `standalone-cs/icon.ico`（16–256 六档，`/win32icon` 烧进 C# 外壳 exe） |
 | [`tools/make-icon.mjs`](tools/make-icon.mjs) | 生成 `web/icon.png`（插件图标 + 托盘 + 窗口图标） |
 
 `tools/dev/` 里是一次性探针，别在日常流程里跑：
 
 | 探针 | 用途 |
 |---|---|
+| `cdp.mjs` | CDP 连接层（launchChrome / waitTarget / connect → `{send, events, close}`）；下面几个探针都复用它，别各写一份 WebSocket 样板 |
 | `cdp-eval.mjs` | 对运行中的页面执行一段 JS（`node tools/dev/cdp-eval.mjs 9223 "…"`） |
 | `probe-embed.mjs` / `probe-plugin.mjs` / `probe-prompt.mjs` | 分别验证嵌入态、插件安装态、`/xj/prompt` 投递 |
-| `qt-interact.mjs` | 驱动独立窗做点击 / 拖动 / resize |
+| `qt-interact.mjs` | 用 CDP 往页面派真实鼠标事件，驱动收起/悬停/点击/展开的整条交互（名字是 Qt 时代的遗留，WebView2 同样适用） |
+| `screen-shot.mjs` / `win-probe.mjs` | 真实桌面截图 + 窗口矩形探测。`SetWindowRgn` 裁出来的圆角/胶囊在 CDP 视口截图里看不见，验外形只能走这条 |
 | `fps-probe.mjs` / `scroll-probe.mjs` / `wheel-check.mjs` | 帧率、滚动容器、滚轮缓动的抽样验证 |
+| `anim-check.mjs` | 动画回归（20 断言：视线跟随 / Q 弹 / 苏醒入睡 / 两级降级） |
+| `comp-check.mjs` | 陪伴账本回归（csc 编译 + 毒数据打 `Companionship`：JSON 数组强转那类坑） |
 | `rename-brand.mjs` | 批量改品牌名；**跑之前先 `git status` 确认干净**，不要对 `tools/` 自身跑 |
 
 ## 发版（推 GitHub + Release）
@@ -312,23 +356,48 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
 
 ## 现状
 
-- 宿主插件已装进 desktop profile，`/xj/state` 返回真实会话；独立窗由 DSH 启动时拉起（或双击 `standalone-py/启动哦鲸鲸.cmd`）。
-- 已接真数据：四形态渲染、状态真值表、双角标、未读制、内嵌审批（通过 / 拒绝 / 幂等 / 409 竞态）、截图提问、用量与余额。
+- 宿主插件已装进 desktop profile，`/xj/state` 返回真实会话；独立窗由 DSH 启动时拉起（或双击 `dist/Ojingjing-CS/Ojingjing.exe`）。
+- 已接真数据：四形态渲染、状态真值表、双角标、未读制、内嵌审批（通过 / 拒绝 / 幂等 / 409 竞态）、
+  输入条发文字（含单图内联）、截图提问、用量与余额。
 - 提问也能在浮窗里答：Agent 通过 `ask_user_question` 抛出来的选项会渲染成按钮，单选题点一下就回、多选题勾完按提交，
   没选项或者想自己说就点「其它…」打字（回车发送）；答完卡片自己收掉，主界面那边同时解除等待。
+- 待办能批量处理了：只读档（`read`）有「通过全部 N 项只读」，**其余档一律逐条确认**（尤其 `danger` 不进批量）。
+  面板开着时键盘 `1` 通过 / `2` 拒绝 / `←` `→` 换一条，高危档要连按两次 `1`。
+  光标在输入框里时这些键完全不生效——不然在输入框里敲个 1 就把文件批了。
 - 面板里那条「今日 ¥ / 余额 ¥」来自插件账本（见上文「用量从哪来」），每个会话卡右侧还会标这个会话今天花了多少。
+- 面板里还有一条「陪伴」：`今天 3 小时 12 分 · 相识第 47 天 · 累计 128 小时`。账本在外壳里
+  （`%APPDATA%\ojingjing\companionship.json`），**只有「窗口可见 且 全系统 5 分钟内有过键鼠输入」才计时**——
+  挂机一夜不算，那只是鲸鱼在守着。累计到 1h / 10h / 100h / 500h / 1000h 时鲸鱼放一次星星并说句话，每档只庆祝一次。
+  只有独立窗有这条（数据在外壳里），内嵌态和原型里不出现。
 - 闲置搭话：`settings.idleNudgeMin`（默认 6 分钟，`设置 → 提醒 → 闲着主动说句话` 可调）内没有鼠标/键盘动作，
   鲸鱼会自己浮上来冒个泡；没人理就 14 秒后沉回去，连着被忽略会自己把间隔拉长到最多 45 分钟。
 - 设置面板「其它」分组接的是本仓库：反馈问题 / 更新日志 / 关于直接开对应页面，「检查更新」拿当前版本比 GitHub Release 的 tag。
 - 工作态提示是鲸鱼头顶三颗泡泡绕圈（外圈虚线反向慢转）；软件光栅模式下放慢到 2.4s/圈但不停，滚动时让出帧。
-- 独立窗能打成绿色 exe：`node tools\build-exe.mjs` → `dist\Ojingjing\`（约 2 分钟，**329 MB**，裁掉 141 个
-  调试资源/语言包之后；exe 本体只有 1.9 MB，其余是 QtWebEngine 内核）。exe 只是外壳，页面仍从
-  DSH 的 `/xj/app.html` 取，所以 DSH 得开着。细节见 [`standalone-py/README.md`](standalone-py/README.md)。
-- 动画帧率：QtWebEngine 默认被 vsync 锁在 60fps（实测 58–59，帧间隔中位数 16.7ms）；设置里另有
-  「高帧率（实验）」。软件光栅下把工作环改成 `steps(48)` 之后空闲 CPU 从 43% 降到 21%，收起时窗口
-  延后 240ms 再缩，200ms 的离场动画不会被窗口裁掉。
-- 还没接：会话卡「停止」、输入条发文字、拖文件进会话（按钮已隐藏，不会点了报错）、点击穿透。
-- DSH 插件宿主跑在 `utilityProcess` 里，拿不到 `BrowserWindow`，所以跨应用常驻必须靠 `standalone-py/` 这个独立程序。
+- 独立窗现在是 **C# + WebView2**（[`standalone-cs/`](standalone-cs/)）：`node tools\build-shell-cs.mjs` →
+  `dist\Ojingjing-CS\`，**1.17 MB**（exe 291KB 已含页面 + 三个 DLL），折叠态在这台 240Hz 机器上跑满 240fps、
+  单核占用约为旧版一半。透明的做法是 `WS_EX_LAYERED` + WebView2 的透明背景，逐像素 alpha 实测成立。
+- C# 外壳的能力已和 Python 版对齐：截图提问（`Ctrl+Shift+A` → 框选 → 卡片 → 发送/✨优化）、外壳设置窗、
+  开机自启、托盘菜单、DSH 关掉后自动退出、加载失败先垫「连接中…」占位页再重试。
+  页面的形态尺寸由页面自己报（`{type:"resize"}`），外壳按右下角锚定缩放：**变大立刻、变小延迟 240ms**，
+  这样 200ms 的收起动画不会被窗口裁掉。
+- 旧 PySide6 外壳（329MB、60fps）已整条删除：源码、spec、PyInstaller 打包链、install 里的 venv/pip 后备路线都没了。
+  想回退去看 git 历史里的 `standalone-py/`（本机另有一份 tar 备份）。
+- 动画帧率：WebView2 跟屏幕刷新率走（这台 240Hz 屏就是 240fps）；想省电去外壳设置里关掉「高帧率」。
+  软件光栅下把工作环改成 `steps(48)` 之后空闲 CPU 从 43% 降到 21%，收起时窗口延后 240ms 再缩，
+  200ms 的离场动画不会被窗口裁掉。
+- 输入条能发字了：`web/embed.js` 的 `prompt()` 从 `unsupported` 桩换成真的 `POST /xj/prompt`，
+  纯文字直接投，拖进来 / 粘进来的**单张图片**走 `data:` URL 内联成 base64（一次一张，宿主那条路由只收一张）；
+  非图片附件（`/xj/prompt` 不收文件）会明说「内嵌浮窗只能发图片」，不再只是笼统的「重试一下？」。
+- 会话卡能停了：正在跑的会话右下角有「停止」（点一下先确认）。宿主走
+  `sessionController.cancel({sessionId})`——只取消当前这一轮，**排队里的消息不会被丢掉**；
+  已经停了的再点一次也是 200，不用防连点。宿主没拿到 controller 时按钮照样在，点了会说清原因。
+- 鲸鱼身上三种手势：**单击**切气泡、**双击**直达第一张待办（没待办就只是开面板，卡片会亮一下）、
+  **拖动**换角。拖动要移动超过 4px 才交给系统——以前一按下就交，指针被 Windows 的移动循环抢走，
+  页面再也收不到 `pointerup`，单击 / 双击其实一直是失效的。有待办时单击会延后 260ms 给双击让位。
+- 还没接：非图片附件、窗口级点击穿透
+  （前端 `pointer-events` 路线已就位，见 `styles.css` §6.9；外壳那边还没做逐像素 hit-test，
+  独立窗里点透明区域仍然会被窗口吃掉）。
+- DSH 插件宿主跑在 `utilityProcess` 里，拿不到 `BrowserWindow`，所以跨应用常驻必须靠 `standalone-cs/` 这个独立程序。
 - 状态真值表（`app/src/state.js`）：**需要确认 > 工作中 > 完成未读 > 空闲 > 离线**；离线时整体灰度 + 光环转虚线。
 - 角色设定：招呼类文案统一称呼「老大」，改台词只动 `app/src/lines.js` 那张表。
 
@@ -339,13 +408,15 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
   写操作（`/xj/decide`、`/xj/answer`、`/xj/prompt`）只收 `POST`。
 - 截图提问的像素只在内存里过一手（`QBuffer`），不写临时文件；单张上限 8MB（外观图）/ 20MiB（投递）。
 - 视觉模型（「✨ 优化」）是可选项，不配就不发任何外部请求；配了走你自己填的 OpenAI 兼容端点。
+- 陪伴时长只记**秒数**（今天 / 累计 / 连续天数 / 首次相识日期），不记任何内容；存在
+  `%APPDATA%\ojingjing\companionship.json`，不出本机。判断「人在不在」读的是 Windows 的
+  `GetLastInputInfo`（全系统最后一次输入的时间），只取一个时间戳，不挂钩子、不记录按了什么。
 
 ## 编码约定（踩过坑，别改）
 
 | 文件 | 编码 | 原因 |
 |---|---|---|
 | 两个根目录 `.cmd` | **纯 ASCII** | `cmd.exe` 按 OEM 码页读批处理，写中文必乱码；面向用户的输出全部由 `tools/*.mjs` 以 UTF-8 打印 |
-| `standalone-py/*.cmd` | **GBK** | 中文 Windows 的 cmd 默认代码页；用 UTF-8 另存会乱码甚至被当成命令执行 |
 | 其余全部 | **UTF-8** | 包括 `lib/`、`app/`、`web/`、`tools/`、所有 `.md` |
 
 ## 排错
@@ -356,9 +427,7 @@ DSH 只报 token，不报钱，所以账本在插件里自己算：
 | 改了前端但界面没变 | 只改了 `app/src/` 没重新构建：`node tools/build-plugin.mjs` 后重跑 `node tools/install.mjs` |
 | 重装了还是旧代码 | pnpm 幂等看的是版本号，不是 tgz 内容——脚本已内置先 `remove` 再 `add`，别手工 `pnpm add` |
 | 卸载后残留目录 | DSH 开着时文件被占用，会改名成 `<包名>.removed-<时间戳>`；关掉 DSH 再跑一次 `uninstall.mjs` 即可清掉 |
-| 独立窗一片白 | DSH 没开或插件没装：浏览器打开 `http://127.0.0.1:43120/xj/state` 验一下 |
-| 独立窗点开面板就消失 | `QT_OPENGL=software` 带进来了（swiftshader 下渲染进程会退）；清掉该环境变量 |
-| `Ojingjing.spec` 打包失败 | spec 里写的是绝对路径，换了目录要同步改 `standalone-py/ojingjing_py.py` 那一行 |
+| 独立窗一片白 | 正常不会了（页面是外壳自带的）。若真遇到：看配置目录的 `ojingjing-cs.log` 有没有「payload 解包失败」，重跑 `node tools/build-shell-cs.mjs` |
 
 ## 许可与素材
 
@@ -367,4 +436,4 @@ MIT，见 [`LICENSE`](LICENSE)。鲸鱼 SVG 造型与全部状态装饰为自绘
 换成自己的图后跑 `python tools/prep-avatar.py` + `node tools/build-plugin.mjs` 即可。
 
 更多细节：[`PLUGIN.md`](PLUGIN.md)（宿主契约与能力矩阵）、[`app/README.md`](app/README.md)（前端与四形态规格）、
-[`standalone-py/README.md`](standalone-py/README.md)（外壳、热键、渲染模式与截图链路）。
+[`standalone-cs/README.md`](standalone-cs/README.md)（外壳、热键、内嵌页面与消息协议）。

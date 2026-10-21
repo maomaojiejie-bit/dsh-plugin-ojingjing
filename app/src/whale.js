@@ -129,6 +129,33 @@
     offline: null,
   };
 
+  /* ---- 里程碑星星（A3）---------------------------------------------
+     常驻但 opacity: 0，只有 .whale.xj-burst 时才播一次（styles.css §23）。
+     形状复用下面那颗小星，靠 transform 平移摆到身体四周 —— 不用为每个位置重画路径。 */
+  const BURST_STAR = "M21.2 5.2l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6z";
+  const BURST_PLACES = [
+    { dx: -13, dy: 6, fill: "#FFD580", opacity: 0.95 },
+    { dx: -6, dy: -3, fill: "#FFE3AC", opacity: 0.9 },
+    { dx: 6, dy: 2, fill: "#FFD580", opacity: 0.85 },
+    { dx: -10, dy: 15, fill: "#FFE3AC", opacity: 0.8 },
+    { dx: 4, dy: 13, fill: "#FFD580", opacity: 0.75 },
+  ];
+
+  function burstNodes() {
+    return svg(
+      "svg",
+      { viewBox: "0 0 36 36", class: "whale-burst", "aria-hidden": "true", focusable: "false" },
+      ...BURST_PLACES.map((p) =>
+        svg("path", {
+          d: BURST_STAR,
+          fill: p.fill,
+          opacity: String(p.opacity),
+          transform: `translate(${p.dx} ${p.dy})`,
+        })
+      )
+    );
+  }
+
   function makeAvatar(expression, px) {
     const st = EXPR[expression] || EXPR.sleep;
     const el = XJ.dom.h("div", { class: "whale whale-av " + st, "aria-hidden": "true" });
@@ -139,6 +166,10 @@
     img.src = XJ.avatarData;
     img.alt = "";
     img.draggable = false;
+    // 相位错开：每只鲸鱼从正弦的不同位置起步（styles.css 的 avFloat，3s 一圈）。
+    // 负 delay = 让动画「已经跑了一会儿」，不占启动时间；不这么做的话，
+    // 重建一次就从 0 开始，多窗口并排时看着是齐刷刷一起浮。
+    img.style.animationDelay = (-Math.random() * 3).toFixed(2) + "s";
     el.appendChild(img);
 
     const fx = FXV[st.replace("st-", "")];
@@ -153,6 +184,8 @@
         svg("svg", { viewBox: "0 0 36 36", class: "whale-fx", "aria-hidden": "true", focusable: "false" }, group)
       );
     }
+    // 里程碑星星：常驻但不可见，只有 JS 加 .xj-burst 时才亮一下
+    el.appendChild(burstNodes());
     return el;
   }
 

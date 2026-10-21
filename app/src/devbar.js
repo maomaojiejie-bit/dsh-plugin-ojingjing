@@ -41,7 +41,7 @@
         () => {
           XJ.mock.harness.setConnected(false);
           A().setConnection("offline");
-          XJ.ui.toast({ type: "warn", title: "连接已断开", sub: "所有动作置灰，30 秒内恢复不算离线" });
+          XJ.ui.toast({ type: "warn", title: "连接已断开", sub: "所有动作置灰，20 秒内恢复不算离线" });
         },
         { on: s.connection === "offline" }
       ),

@@ -5,7 +5,6 @@
 (function () {
   const XJ = (window.XJ = window.XJ || {});
   const { h, truncate } = XJ.dom;
-  const S = () => XJ.state.store.state;
   const A = () => XJ.state.actions;
 
   function quickbar(s) {

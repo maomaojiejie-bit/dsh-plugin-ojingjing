@@ -4,7 +4,7 @@
    ========================================================================== */
 (function () {
   const XJ = (window.XJ = window.XJ || {});
-  const { uid, uuidv7, wait } = XJ.dom;
+  const { uid, wait } = XJ.dom;
 
   /* ---------- 会话种子：一个"有故事"的现场 ---------- */
   function seedSessions() {

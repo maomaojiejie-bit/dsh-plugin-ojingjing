@@ -5,16 +5,15 @@
  *   node tools/probe-embed.mjs             # 默认 http://127.0.0.1:43120
  *   node tools/probe-embed.mjs --port 1234
  */
-import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { connect, launchChrome, sleep } from "./cdp.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SHOTS = join(ROOT, ".shots");
 const PORT_CDP = 9339;
-const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const W = 520;
 const H = 700;
 
@@ -31,68 +30,9 @@ const DPR = 1;
 const WIN_W = W_ * DPR;
 const WIN_H = H_ * DPR;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const chrome = launchChrome(PORT_CDP, { width: WIN_W, height: WIN_H, extraFlags: ["--no-sandbox"], prefix: "xj-embed-" });
 
-const profile = mkdtempSync(join(tmpdir(), "xj-embed-"));
-const proc = spawn(
-  CHROME,
-  [
-    "--headless=new",
-    "--disable-gpu",
-    "--no-sandbox",
-    "--hide-scrollbars",
-    "--no-first-run",
-    `--remote-debugging-port=${PORT_CDP}`,
-    `--user-data-dir=${profile}`,
-    `--window-size=${WIN_W},${WIN_H}`,
-    "about:blank",
-  ],
-  { stdio: "ignore" }
-);
-
-async function target() {
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    try {
-      const list = await (await fetch(`http://127.0.0.1:${PORT_CDP}/json/list`)).json();
-      const page = list.find((t) => t.type === "page");
-      if (page) return page;
-    } catch {}
-    await sleep(200);
-  }
-  throw new Error("CDP 目标超时");
-}
-
-function connect(url) {
-  return new Promise((res, rej) => {
-    const ws = new WebSocket(url);
-    const pending = new Map();
-    const events = [];
-    let seq = 0;
-    ws.addEventListener("open", () => {
-      const send = (method, params = {}) =>
-        new Promise((resolveP) => {
-          const id = ++seq;
-          pending.set(id, resolveP);
-          ws.send(JSON.stringify({ id, method, params }));
-        });
-      ws.addEventListener("message", (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.id && pending.has(msg.id)) {
-          pending.get(msg.id)(msg);
-          pending.delete(msg.id);
-        } else if (msg.method) {
-          events.push(msg);
-        }
-      });
-      res({ send, events });
-    });
-    ws.addEventListener("error", rej);
-  });
-}
-
-const page = await target();
-const { send, events } = await connect(page.webSocketDebuggerUrl);
+const { send, events, close } = await connect(PORT_CDP);
 
 await send("Page.enable");
 await send("Runtime.enable");
@@ -179,7 +119,6 @@ const out = join(SHOTS, "embed-live.png");
 writeFileSync(out, Buffer.from(shot.result.data, "base64"));
 console.log("截图 →", out);
 
-try {
-  proc.kill();
-} catch {}
+close();
+chrome.close();
 process.exit(state && state.ready && !consoleErrors.length ? 0 : 2);

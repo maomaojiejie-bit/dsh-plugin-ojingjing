@@ -1,46 +1,15 @@
-// 探查任意 CDP 页面：node tools/cdp-eval.mjs <port> "<js expression>" [--shot out.png]
-// 用途：PySide6 的 QtWebEngine 窗口里页面加载失败时，看它到底停在什么状态。
+// 探查任意 CDP 页面：node tools/dev/cdp-eval.mjs <port> "<js expression>" [--shot out.png]
+// 用途：外壳（WebView2）或插件页面加载异常时，看它到底停在什么状态、报了什么错。
 import { writeFile } from "node:fs/promises";
+
+import { connect } from "./cdp.mjs";
 
 const port = process.argv[2] || "9223";
 const expr = process.argv[3] || "document.title";
 const shotIdx = process.argv.indexOf("--shot");
 const shotPath = shotIdx > 0 ? process.argv[shotIdx + 1] : null;
 
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const page = list.find((t) => t.type === "page");
-if (!page) {
-  console.error("no page target");
-  process.exit(1);
-}
-
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0;
-const pending = new Map();
-const events = [];
-
-ws.addEventListener("message", (ev) => {
-  const msg = JSON.parse(ev.data);
-  if (msg.id && pending.has(msg.id)) {
-    pending.get(msg.id)(msg);
-    pending.delete(msg.id);
-  } else if (msg.method) {
-    events.push(msg);
-  }
-});
-
-function send(method, params = {}) {
-  return new Promise((resolve) => {
-    const myId = ++id;
-    pending.set(myId, resolve);
-    ws.send(JSON.stringify({ id: myId, method, params }));
-  });
-}
-
-await new Promise((resolve) => {
-  if (ws.readyState === WebSocket.OPEN) resolve();
-  else ws.addEventListener("open", resolve, { once: true });
-});
+const { send, events, close } = await connect(port);
 await send("Runtime.enable");
 await send("Log.enable");
 await send("Network.enable");
@@ -72,4 +41,4 @@ if (shotPath) {
     console.log("screenshot failed", JSON.stringify(shot));
   }
 }
-ws.close();
+close();

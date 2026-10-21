@@ -17,19 +17,17 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const CONFIG = path.join(os.homedir(), ".dsh", "ojingjing-shell.json");
 
+// 只数 C# 外壳（镜像名 Ojingjing.exe）。PySide6 那套 2026-10-21 已整条退役。
+const COUNT_PS = "$a = @(Get-CimInstance Win32_Process -Filter \"Name='Ojingjing.exe'\").Count; $a";
+
+const KILL_PS =
+  "Get-CimInstance Win32_Process -Filter \"Name='Ojingjing.exe'\" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+
 const appInstances = () =>
-  execFileSync("powershell", [
-    "-NoProfile",
-    "-Command",
-    "@(Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*ojingjing_py.py*' }).Count",
-  ], { encoding: "utf8" }).trim();
+  execFileSync("powershell", ["-NoProfile", "-Command", COUNT_PS], { encoding: "utf8" }).trim();
 
 if (!process.argv.includes("--no-kill")) {
-  execFileSync("powershell", [
-    "-NoProfile",
-    "-Command",
-    "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*ojingjing_py.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
-  ], { stdio: "ignore" });
+  execFileSync("powershell", ["-NoProfile", "-Command", KILL_PS], { stdio: "ignore" });
   await new Promise((r) => setTimeout(r, 1200));
 }
 

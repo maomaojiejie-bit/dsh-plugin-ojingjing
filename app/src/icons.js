@@ -109,5 +109,4 @@
   }
 
   XJ.icon = makeIcon;
-  XJ.iconPaths = P;
 })();

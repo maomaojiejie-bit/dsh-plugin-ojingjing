@@ -668,5 +668,5 @@
     cap.drag = null;
   }
 
-  XJ.capture = { start, stop, state: cap };
+  XJ.capture = { start };
 })();

@@ -1,28 +1,11 @@
 // 量独立窗的帧率：node tools/dev/fps-probe.mjs [port] [seconds]
 // 需要外壳带 --remote-debugging-port=<port> 启动（QTWEBENGINE_CHROMIUM_FLAGS）。
+import { connect } from "./cdp.mjs";
+
 const port = process.argv[2] || "9223";
 const secs = Number(process.argv[3] || 3);
 
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const page = list.find((t) => t.type === "page");
-if (!page) throw new Error("没有 page target");
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-const pending = new Map();
-let id = 0;
-ws.addEventListener("message", (ev) => {
-  const msg = JSON.parse(ev.data);
-  if (msg.id && pending.has(msg.id)) {
-    pending.get(msg.id)(msg);
-    pending.delete(msg.id);
-  }
-});
-const send = (method, params = {}) =>
-  new Promise((resolve) => {
-    const myId = ++id;
-    pending.set(myId, resolve);
-    ws.send(JSON.stringify({ id: myId, method, params }));
-  });
-await new Promise((r) => (ws.readyState === WebSocket.OPEN ? r() : ws.addEventListener("open", r, { once: true })));
+const { send, close } = await connect(port);
 await send("Runtime.enable");
 
 const expr = `(async () => {
@@ -50,4 +33,4 @@ const expr = `(async () => {
 
 const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
 console.log(r.result?.result?.value ?? JSON.stringify(r));
-ws.close();
+close();

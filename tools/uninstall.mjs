@@ -5,30 +5,29 @@
  *   node tools/uninstall.mjs                卸载插件 + 停独立窗 + 删自动拉起配置
  *   node tools/uninstall.mjs --dry-run      只打印将做什么
  *   node tools/uninstall.mjs --direct       不调 dsh，手工摘（dsh 不可用时的退路）
- *   node tools/uninstall.mjs --purge        连 .venv / data / 日志 / dist 里的 tgz 一起删
+ *   node tools/uninstall.mjs --purge        连设置数据 / 日志 / dist 里的 exe 和 tgz 一起删
  *
- * 默认不删用户数据：standalone-py/data 里的 settings.json 存着头像、位置这些偏好，
+ * 默认不删用户数据：%APPDATA%\ojingjing 里的 settings.json 存着头像、位置这些偏好，
  * 想彻底清干净再显式加 --purge。
  *
  * 退出码：0 成功；1 某一步失败；2 参数用错。
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
-import { findDsh, pluginArgv, runDsh } from "./dsh.mjs";
+import { findDsh, isDshRunning, pluginArgv, runDsh } from "./dsh.mjs";
+import { die, info, ok, say, step, warn } from "./lib/log.mjs";
 
 import {
+  CS_DIR,
   LEGACY_PACKAGES,
   LEGACY_SHELL_CONFIGS,
   PACKAGE_NAME,
-  PID_FILE,
   PROFILES_DIR,
   ROOT,
   SHELL_CONFIG,
-  SHELL_DIR,
   removeShellConfig,
+  runningCsShellPids,
   stopRunningShell,
 } from "./shell-config.mjs";
 
@@ -40,7 +39,7 @@ const USAGE = `用法：node tools/uninstall.mjs [选项]
   --direct             不用 dsh，直接改 profile/package.json + 删目录
   --keep-shell-config  保留 ~/.dsh/ojingjing-shell.json（下次开 DSH 还会尝试拉起）
   --keep-data          默认行为，写在这里只为对照
-  --purge              额外删：.venv、data/（含偏好和 API key）、日志、dist/*.tgz
+  --purge              额外删：外壳 data/（含偏好和 API key）、日志、dist 里的 exe 和 tgz
   --profile <name>     目标 profile，默认 desktop
   --dsh <path>         指定 dsh 可执行文件
   -h, --help           看这段`;
@@ -78,31 +77,8 @@ for (let i = 0; i < argv.length; i += 1) {
   else die(`不认识的选项：${a}（用 --help 看用法）`);
 }
 
-/* ------------------------------------------------------------------ 输出 */
-
-function say(msg = "") {
-  process.stdout.write(msg + "\n");
-}
-function step(n, total, title) {
-  say(`\n【${n}/${total}】${title}`);
-}
-function info(msg) {
-  say(`  ${msg}`);
-}
-function ok(msg) {
-  say(`  ✓ ${msg}`);
-}
-function warn(msg) {
-  say(`  ! ${msg}`);
-}
-function die(msg, code = 1) {
-  process.stdout.write(`\n✗ ${msg}\n`);
-  process.exit(code);
-}
-
-/* ------------------------------------------------------------ 小工具 */
-
-const q = (s) => `"${s}"`;
+/* ------------------------------------------------------------------ 小工具 */
+/* say/step/info/ok/warn/die 在 lib/log.mjs；isDshRunning 在 dsh.mjs。 */
 
 /** 删一个目录；node_modules 里 pnpm 放的是 junction，只摘链接别递归进去。 */
 function removeTree(target) {
@@ -171,51 +147,8 @@ function sweepTombstones(profileDir, names) {
 /**
  * DSH Desktop 是不是正开着。开着的时候它把插件的 lib/index.js 装进了内存，
  * 文件句柄不放 → node_modules 里那个目录删不掉。提前说清楚，省得用户以为卸载坏了。
+ * （实现在 dsh.mjs，install/uninstall 共用。）
  */
-function isDshRunning() {
-  const r = capture(["tasklist", "/FI", "IMAGENAME eq DSH Desktop.exe", "/NH"]);
-  if (!r.ok) return null; // 探测不出来就不断言
-  return /DSH Desktop\.exe/i.test(r.out);
-}
-
-let captureSeq = 0;
-
-/** 起一个子进程并把输出收进临时文件（不用管道：受限环境里管道会 EPERM）。 */
-function capture(args) {
-  captureSeq += 1;
-  const tmp = path.join(os.tmpdir(), `xj-uninstall-${process.pid}-${captureSeq}.log`);
-  let fd;
-  try {
-    fd = fs.openSync(tmp, "w");
-  } catch {
-    fd = "ignore";
-  }
-  const r = spawnSync(args.map(q).join(" "), {
-    shell: true,
-    encoding: "utf8",
-    stdio: ["ignore", fd, fd],
-    windowsHide: true,
-  });
-  if (typeof fd === "number") {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      /* 无所谓 */
-    }
-  }
-  let out = "";
-  try {
-    out = fs.readFileSync(tmp, "utf8");
-  } catch {
-    /* 没读到就当空 */
-  }
-  try {
-    fs.rmSync(tmp, { force: true });
-  } catch {
-    /* 无所谓 */
-  }
-  return { ok: r.status === 0, out };
-}
 
 /* ------------------------------------------------------------------ 主流程 */
 
@@ -292,10 +225,10 @@ try {
 
   /* ---------------------------------------------------- 2 停独立窗 */
   step(2, TOTAL, "停掉正在跑的独立窗");
-  if (!fs.existsSync(PID_FILE)) {
-    info("没有 pid 文件，独立窗没在跑（或已被手动关掉）");
+  if (runningCsShellPids().length === 0) {
+    info("没找到在跑的独立窗（没有 Ojingjing.exe）");
   } else if (opts.dryRun) {
-    info("$ taskkill 掉 pid 文件里那个进程（dry-run 不真的杀）");
+    info("$ taskkill 掉独立窗进程（dry-run 不真的杀）");
   } else {
     const r = stopRunningShell();
     if (r.stopped) ok(`已结束 pid ${r.stopped}`);
@@ -458,23 +391,13 @@ try {
   if (opts.purge) {
     say("\n清理本地文件（--purge）");
     const victims = [
-      path.join(SHELL_DIR, ".venv"),
-      path.join(SHELL_DIR, "data"),
-      path.join(SHELL_DIR, "__pycache__"),
-      path.join(SHELL_DIR, "ojingjing-py.log"),
-      path.join(SHELL_DIR, "out.txt"),
-      path.join(SHELL_DIR, "err.txt"),
+      // C# 外壳在配置目录写不进时的回退数据（偏好 + 日志），见 standalone-cs/Settings.cs
+      path.join(CS_DIR, "data"),
+      // C# 外壳产物（一条 node tools/build-shell-cs.mjs 就能再生）
+      CS_DIR,
+      // PyInstaller 时代留下的中间目录（老仓库升级上来的，可能还在）
+      path.join(ROOT, "build"),
     ];
-    // venv 建坏时的改名残骸（.venv.broken-<时间戳>），几百 MB 起
-    try {
-      for (const name of fs.readdirSync(SHELL_DIR)) {
-        if (/^\.venv\.(broken|removed)-/.test(name)) victims.push(path.join(SHELL_DIR, name));
-      }
-    } catch {
-      /* 目录不在就算了 */
-    }
-    // PyInstaller 的中间目录 + onedir 产物（一条 node tools/build-exe.mjs 就能再生）
-    victims.push(path.join(ROOT, "build"));
     const distDir = path.join(ROOT, "dist");
     if (fs.existsSync(distDir)) {
       for (const name of fs.readdirSync(distDir)) {

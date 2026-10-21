@@ -22,6 +22,7 @@ const plugin = (await import(pathToFileURL(ENTRY).href)).default;
 const routes = { exact: new Map(), prefix: [] };
 const eventHandlers = new Map();
 let promptCalls = [];
+let stopCalls = [];
 
 const ctx = {
   webServer: {
@@ -52,6 +53,10 @@ const ctx = {
 const fakeController = {
   async prompt(request, signal) {
     promptCalls.push(request);
+    return { accepted: true };
+  },
+  async cancel(request) {
+    stopCalls.push(request);
     return { accepted: true };
   },
 };
@@ -154,6 +159,29 @@ fakeController.prompt = async () => {
 };
 const conflict = await post("/xj/prompt", { sessionId: "s_abc", text: "hi" });
 check("controller 409 → 409 prompt_failed", conflict.status === 409, `HTTP ${conflict.status}`);
+
+// 6. /xj/stop（C2）
+check("/xj/stop 已注册", routes.exact.has("/xj/stop"));
+const stopOk = await post("/xj/stop", { id: "s_abc" });
+check(
+  "stop 200 且把 sessionId 透给 controller",
+  stopOk.status === 200 && stopCalls.at(-1) && stopCalls.at(-1).sessionId === "s_abc",
+  `HTTP ${stopOk.status} ${JSON.stringify(stopCalls.at(-1) || {})}`
+);
+const stopNoId = await post("/xj/stop", {});
+check("缺 id → 422", stopNoId.status === 422, `HTTP ${stopNoId.status}`);
+const stopGet = await fetch(base + "/xj/stop");
+check("GET /xj/stop → 405", stopGet.status === 405, `HTTP ${stopGet.status}`);
+
+// DSH 的 RemoteError 把错误码放在 err.code 里、而且是字符串（session/not-found），
+// Number() 出来是 NaN —— 这里专门钉住它别被一律当成 502。
+fakeController.cancel = async () => {
+  const err = new Error('session "s_gone" not found (not attached)');
+  err.code = "session/not-found";
+  throw err;
+};
+const stopGone = await post("/xj/stop", { id: "s_gone" });
+check("session/not-found → 404", stopGone.status === 404, `HTTP ${stopGone.status}`);
 
 server.close();
 console.log(failures ? `\n${failures} 项失败` : "\n全部通过 ✅");

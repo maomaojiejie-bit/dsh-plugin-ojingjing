@@ -18,15 +18,15 @@ cordis.patch.yml      # - insert: [{ id: dsh-plugin-ojingjing, name: dsh-plugin-
 lib/index.js          # 入口：export default { name, apply(root) { … } }
 web/icon.png          # 插件图标（也是托盘/exe 的来源）
 web/app.html          # 由 tools/build-plugin.mjs 从 app/index.html 生成
-web/embed.js          # iframe 内：XJ.embed + 真数据 Harness（/xj/state、/xj/decide、/xj/answer、/xj/prompt）
+web/embed.js          # iframe 内：XJ.embed + 真数据 Harness（/xj/state、/xj/decide、/xj/answer、/xj/prompt、/xj/stop）
 web/embed.css         # 嵌入态样式（透明底、隐藏演示桌面/原型控制台/输入区）
 web/inject.js         # 页面内注入版用（默认关闭 INJECT_IN_PAGE=false）
 web/static/src/**     # 原型源码副本（构建产物，来自 app/src/；esbuild minify + 剥离 mock/devbar）
 LICENSE               # 随包发布（MIT）
 ```
 
-`app/`（原型）、`standalone-py/`（桌面外壳）、`tools/`、`docs/` 是随仓库带的配套内容，
-**不在 `files` 白名单里**，`npm pack` 实测只出 31 个文件（`package.json` 的白名单就是安装边界的唯一真源：
+`app/`（原型）、`standalone-cs/`（桌面外壳）、`tools/` 是随仓库带的配套内容，
+**不在 `files` 白名单里**，`npm pack` 实测只出 30 个文件（`package.json` 的白名单就是安装边界的唯一真源：
 `dsh plugin add` 按 tgz 装，`tools/install.mjs --direct` 直接照着它复制）。
 
 约定（与参考插件一致）：
@@ -43,12 +43,12 @@ LICENSE               # 随包发布（MIT）
 ## 跟 DSH 联动：打开 DSH 就自动打开哦鲸鲸
 
 宿主插件跑在 DSH 的宿主进程里，能拿到 Node 的 `child_process`，所以「DSH 启动 → 独立窗出现」
-就是插件加载时 fork 一个 `pythonw`：
+就是插件加载时起一个独立进程：
 
 1. `tools\install.mjs` 第 6 步写 `%USERPROFILE%\.dsh\ojingjing-shell.json`（`tools\shell-config.mjs`），
-   内容是外壳目录 + 解释器候选（venv 优先，其次系统 Python，最后 `pyw.exe`）；
-2. 插件 `apply()` 末尾调 `launchShellIfNeeded()`：文件存在、`autoLaunch !== false`、脚本和解释器
-   都在 → `spawn(pythonw, [ojingjing_py.py], { detached: true, stdio: "ignore", env: { XJ_LAUNCHED_BY: "dsh" } })`；
+   里面只有 C# 外壳一种：`{ "exe": …, "workDir": … }`；
+2. 插件 `apply()` 末尾调 `launchShellIfNeeded()`：文件存在、`autoLaunch !== false`、`exe` 存在 →
+   `spawn(exe, [], { detached: true, stdio: "ignore", env: { XJ_LAUNCHED_BY: "dsh" } })`；
 3. 幂等两层：插件里 `shellSpawned` 只拉一次；外壳自己有命名互斥量，重复启动会自我退出。
 
 **关掉自动启动**任选一种：
@@ -64,8 +64,8 @@ LICENSE               # 随包发布（MIT）
 
 ```powershell
 node tools\test-shell-launch.mjs
-# 配置存在: true / 拉起前实例数: 0 / host: [ojingjing] 已拉起独立窗: …pythonw.exe …ojingjing_py.py
-# 拉起后实例数: 2（venv 转接 + 真解释器，算一个实例）/ 二次调用后实例数: 2（幂等）
+# 配置存在: true / 拉起前实例数: 0 / host: [ojingjing] 已拉起独立窗: …dist\Ojingjing-CS\Ojingjing.exe
+# 拉起后实例数: 1 / 二次调用后实例数: 1（幂等）
 ```
 
 ## 一、构建
@@ -73,24 +73,24 @@ node tools\test-shell-launch.mjs
 ```powershell
 cd C:\Users\17897\Desktop\new\ojingjing-widget
 node tools\build-plugin.mjs      # 重新生成 web/app.html + web/static/src（minify + 剥离 mock/devbar）
-node tools\build-exe.mjs         # 打 Windows 分发版：PyInstaller onedir + 裁语言包 → dist/Ojingjing（约 425MB）
+node tools\build-shell-cs.mjs    # 打独立窗外壳：web/ 压成 payload.zip 嵌进 exe → dist/Ojingjing-CS（约 1.17MB）
 ```
 
 `build-plugin.mjs` 的 minify 走 esbuild（可选依赖，装在受管 node workspace：
 `cd %USERPROFILE%\.workbuddy\binaries\node\workspace && npm install esbuild`），找不到就原样拷贝。
-`build-exe.mjs` 会自动挑解释器（venv python 优先，坏了退回系统 Python + PYTHONPATH），
-PyInstaller 没装会先自动补。
+`build-shell-cs.mjs` 用系统自带的 csc（.NET Framework 4.8，**只支持 C# 5**），
+构建前会先把在跑的实例杀掉（否则删 dist 会报 EPERM）。
 
 ## 二、安装
 
 ### A. 脚本（推荐）
 
 ```powershell
-node tools\install.mjs                   # 全套：构建 → npm pack → dsh plugin add → venv 依赖 → 自动拉起配置
+node tools\install.mjs                   # 全套：构建 → npm pack → dsh plugin add → 检查外壳 → 自动拉起配置
 node tools\install.mjs --dry-run         # 只打印将执行的命令
 node tools\install.mjs --relaunch        # 装完顺手把 DSH 拉起来
 node tools\uninstall.mjs                 # 回滚：摘插件 + 去登记 + 停独立窗 + 删自动拉起配置
-node tools\uninstall.mjs --purge         # 连 .venv / data（含 API key）/ 日志 / dist 一起清
+node tools\uninstall.mjs --purge         # 连外壳 data（含偏好和 API key）/ 日志 / dist 一起清
 ```
 
 双击等价物：`安装到DSH.cmd`、`从DSH卸载.cmd`（故意只写 ASCII——cmd 按 OEM 码页读批处理，中文会变乱码，
@@ -130,7 +130,7 @@ node tools\uninstall.mjs --purge         # 连 .venv / data（含 API key）/ �
 ```
 
 `dsh plugin` 本质上就是把参数转发给 profile 目录里的 pnpm（`withFileLock` 会等在跑的 `package.json`
-最多 2 分钟），所以比脚本少干了「构建 + 打包 + 登记校验 + venv + 自动拉起配置」这几步。
+最多 2 分钟），所以比脚本少干了「构建 + 打包 + 登记校验 + 自动拉起配置」这几步。
 
 ### C. npm 包（分发给别人）
 
@@ -157,7 +157,7 @@ npm.cmd publish --access public            # 已配 publishConfig.access=public
 
 包内容（`files` 白名单）：`lib/index.js`（宿主插件）、`web/**`（app.html + embed + static 前端）、
 `cordis.patch.yml`、`README.md`、`LICENSE`；**不含** `app/`、`docs/`、`tools/`、
-`standalone-py/`（Python 外壳是独立程序，通过 `~/.dsh/ojingjing-shell.json` 联动）。`npm pack --dry-run`
+`standalone-cs/`（桌面外壳是独立程序，通过 `~/.dsh/ojingjing-shell.json` 联动）。`npm pack --dry-run`
 已验证清单（31 个文件）；`XJ_PLUGIN_ENTRY=<tgz 解出的 lib/index.js> node tools\test-host.mjs`
 能跑完整套 `/xj/*` 契约断言（16 项全过）。
 
@@ -190,8 +190,12 @@ node tools\check-plugin.mjs     # 探测 /xj/state、/xj/app.html 是否可用
 | 提问选项按钮（单选点一下 / 多选勾完提交 / 「其它…」打字） | ✅ 接 `user-questions/request`，回填走 `POST /xj/answer` |
 | 截图提问（独立窗 `Ctrl+Shift+A` → 整屏 → 进会话） | ✅ 新增 `POST /xj/prompt` → `ctx.sessionController.prompt(...)`，图片走内联 base64 |
 | 用量与余额（面板「今日 ¥ / 余额 ¥」+ 会话卡单价） | ✅ `lib/usage.js`：从 `assistant/message` 的真实 usage 按峰谷价目表折算，余额读 DeepSeek `/user/balance`（60s 缓存） |
-| 会话卡「停止」、输入条发文字、拖文件 | ⛔ 宿主侧还没接（按钮已隐藏，不会点了报错） |
-| 跨应用常驻（真桌面悬浮窗） | ⛔ 受宿主进程模型限制，见下；已用 `standalone-py/`（Python + PySide6）外壳解决 |
+| 输入条发文字（内嵌态，含单图内联） | ✅ `web/embed.js` 的 `prompt()` → `POST /xj/prompt`：纯文字直接投；拖入 / 粘贴的图片走 `data:` URL 内联（一次一张）；非图片附件明确报错 |
+| 会话卡「停止」 | ✅ `POST /xj/stop` → `sessionController.cancel({sessionId})`：只取消当前这一轮，排队里的消息保留；幂等（再点一次仍 200） |
+| 浮窗里新建会话 | ⛔ 宿主没提供创建路由，得回主界面 |
+| 跨应用常驻（真桌面悬浮窗） | ✅ `standalone-cs/`（C# + WebView2，0.93 MB，240fps）负责；宿主进程模型本身拿不到 BrowserWindow，见下 |
+| 外壳设置窗（端口 / 热键 / 截图模式 / 高帧率 / 视觉模型） | ✅ 托盘「设置…」或页面 `{type:"settings"}` |
+| 开机自启 / DSH 关掉后自动退出 | ✅ 写 `HKCU\…\Run` / 15s 探一次 `/xj/state`，连续 4 次不通就退（默认关） |
 
 ### `/xj/prompt` 契约（截图提问用的那条路）
 
@@ -210,6 +214,29 @@ POST /xj/prompt      Content-Type: application/json
 （`readBody(req, 40 * 1024 * 1024)`；默认的 64KB 会把整屏截图挡成 `400 bad_json`）。
 **改了这条路由要重启一次 DSH**（插件在宿主启动时加载），否则 `POST` 会落到 405。
 
+### `/xj/stop` 契约（会话卡「停止」用的那条路）
+
+```
+POST /xj/stop        Content-Type: application/json
+{ "id": "<sessionId>" }
+
+200 { "ok": true, "accepted": true }
+400 bad_json / 405 method_not_allowed / 415 unsupported_media_type
+422 missing_session / 404 stop_failed（session/not-found，会话已经不在了）
+409|503 stop_failed（把 DSH 的 status 透出来） / 502 stop_unavailable（没拿到 sessionController）
+```
+
+宿主侧调 `sessionController.cancel({ sessionId })`。语义是 **cancel 当前这一轮、保留 inbox**
+（`agent.cancel({ kind: "user" }, { keepInbox: true })`）——排队里的消息不会被丢掉，
+只是把正在跑的那一轮停住，所以不会产生未读。
+
+**幂等**：已经停了的会话再停一次，`agent.cancel` 是空操作，照样回 200，前端不用防连点。
+
+**一个坑**：DSH 的 `RemoteError` 把错误码放在 `err.code` 里，而且是**字符串**
+（`session/not-found`）。`Number(err.code)` 出来是 `NaN`，如果照 `/xj/prompt` 那样
+`Number.isFinite` 判一下就会一律落到 502。所以这条路由对字符串形态单独认了一次
+（`/not[-_ ]?found/i` → 404），`tools/test-host.mjs` 里也钉了这个用例。
+
 **为什么不是真桌面窗口**：DSH 的插件宿主跑在 `utilityProcess` 里（`lib/main.js`
 `utilityProcess.fork(...)`），拿不到 Electron `BrowserWindow`；桌面端只透出白名单
 RPC（`show / notifyAttention / tray:set / shell:*` 等），不包含「创建我的窗口」。
@@ -227,7 +254,7 @@ RPC（`show / notifyAttention / tray:set / shell:*` 等），不包含「创建�
 
 ```powershell
 node tools\uninstall.mjs            # 摘插件 + 去登记 + 停独立窗 + 删 ~/.dsh/ojingjing-shell.json
-node tools\uninstall.mjs --purge    # 再连 .venv / data（含 API key）/ 日志 / dist tarball 一起清
+node tools\uninstall.mjs --purge    # 再连外壳 data（含偏好和 API key）/ 日志 / dist tarball 一起清
 ```
 
 再重启 DSH。手工等价操作：删

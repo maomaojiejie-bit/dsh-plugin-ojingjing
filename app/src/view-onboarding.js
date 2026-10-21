@@ -6,7 +6,6 @@
 (function () {
   const XJ = (window.XJ = window.XJ || {});
   const { h } = XJ.dom;
-  const S = () => XJ.state.store.state;
   const A = () => XJ.state.actions;
 
   const CORNERS = [
@@ -227,5 +226,4 @@
 
   XJ.views = XJ.views || {};
   XJ.views.onboarding = onboarding;
-  XJ.views.CORNERS = CORNERS;
 })();

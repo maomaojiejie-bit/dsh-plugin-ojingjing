@@ -1,33 +1,17 @@
-// 在 QtWebEngine 页面里做真实鼠标交互：node tools/qt-interact.mjs <port>
+// 用 CDP 往页面派真实鼠标事件（WebView2 / Chromium 通用）：node tools/dev/qt-interact.mjs <port>
 // 步骤：收起 → 悬停鲸鱼（等气泡）→ 单击（切气泡）→ 点「展开面板」→ 收起
 import { writeFile } from "node:fs/promises";
 
+import { connect } from "./cdp.mjs";
+
 const port = process.argv[2] || "9223";
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const page = list.find((t) => t.type === "page");
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0;
-const pending = new Map();
-ws.addEventListener("message", (ev) => {
-  const msg = JSON.parse(ev.data);
-  if (msg.id && pending.has(msg.id)) {
-    pending.get(msg.id)(msg);
-    pending.delete(msg.id);
-  }
-});
-const send = (method, params = {}) =>
-  new Promise((resolve) => {
-    const myId = ++id;
-    pending.set(myId, resolve);
-    ws.send(JSON.stringify({ id: myId, method, params }));
-  });
+const { send, close } = await connect(port);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const evalJs = async (expr) => {
   const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true });
   return r.result?.result?.value;
 };
 
-await new Promise((r) => (ws.readyState === WebSocket.OPEN ? r() : ws.addEventListener("open", r, { once: true })));
 await send("Runtime.enable");
 await send("Input.setIgnoreInputEvents", { ignore: false }).catch(() => {});
 
@@ -81,4 +65,4 @@ if (shot.result?.data) {
   await writeFile(out, Buffer.from(shot.result.data, "base64"));
   console.log("screenshot ->", out.pathname);
 }
-ws.close();
+close();

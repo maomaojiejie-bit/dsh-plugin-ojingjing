@@ -19,6 +19,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { capture, newestFile } from "./lib/exec.mjs";
+
+/**
+ * DSH Desktop 是不是正开着。开着的话 profile 被它独占锁住（dsh plugin add 会失败），
+ * 插件的 lib/index.js 也被它装在内存里（node_modules 目录删不掉）。
+ * install.mjs / uninstall.mjs 在动手前都会问一句；探测不出来返回 null，不断言。
+ */
+export function isDshRunning() {
+  const r = capture(["tasklist", "/FI", "IMAGENAME eq DSH Desktop.exe", "/NH"], { tag: "xj-dsh" });
+  if (!r.ok) return null;
+  return /DSH Desktop\.exe/i.test(r.out);
+}
+
 /**
  * 找一个能管 desktop profile 的 dsh：
  * 优先 DSH Desktop 生成的 host-commands shim（只有它被授权），其次 PATH 上的 dsh。
@@ -32,15 +45,9 @@ export function findDsh() {
     "desktop",
     "generations",
   );
-  if (fs.existsSync(gens)) {
-    const newest = fs
-      .readdirSync(gens)
-      .map((name) => path.join(gens, name, "bin", "dsh.cmd"))
-      .filter((p) => fs.existsSync(p))
-      .map((p) => ({ p, t: fs.statSync(p).mtimeMs }))
-      .sort((a, b) => b.t - a.t)[0];
-    if (newest) return { cmd: newest.p, from: "DSH Desktop host-commands" };
-  }
+  // 每次 DSH 启动会生成新的一代 shim，取最新那个
+  const newest = newestFile(gens, (name) => path.join(gens, name, "bin", "dsh.cmd"));
+  if (newest) return { cmd: newest, from: "DSH Desktop host-commands" };
 
   const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
   for (const dir of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {

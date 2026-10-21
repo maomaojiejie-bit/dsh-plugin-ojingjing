@@ -38,25 +38,6 @@
     },
   };
 
-  /* ---------- 剪贴板 ---------- */
-  const clipboard = {
-    async writeText(text) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return true;
-      } catch (_) {
-        return false;
-      }
-    },
-    async readText() {
-      try {
-        return await navigator.clipboard.readText();
-      } catch (_) {
-        return "";
-      }
-    },
-  };
-
   /* ---------- 文件选择 / 读取 ---------- */
   function pickFiles() {
     return new Promise((resolve) => {
@@ -157,7 +138,6 @@
   }
 
   /* ---------- 快捷键 ---------- */
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   function comboFromEvent(e) {
     const parts = [];
     if (e.ctrlKey) parts.push("Ctrl");
@@ -179,30 +159,6 @@
     if (!parts.length) return null;
     parts.push(key);
     return parts.join("+");
-  }
-
-  function parseCombo(combo) {
-    if (!combo) return null;
-    const parts = String(combo).split("+");
-    const key = parts.pop();
-    return {
-      ctrl: parts.includes("Ctrl"),
-      alt: parts.includes("Alt"),
-      shift: parts.includes("Shift"),
-      key: key === "Space" ? " " : key.toLowerCase(),
-    };
-  }
-
-  function matchCombo(e, combo) {
-    const c = parseCombo(combo);
-    if (!c) return false;
-    const key = e.key === " " ? " " : e.key.toLowerCase();
-    return (
-      !!e.ctrlKey === c.ctrl &&
-      !!e.altKey === c.alt &&
-      !!e.shiftKey === c.shift &&
-      key === c.key.toLowerCase()
-    );
   }
 
   /* ---------- 提示音（默认关：仅在完成且用户开启时响） ---------- */
@@ -227,52 +183,14 @@
     } catch (_) {}
   }
 
-  /* ---------- 焦点归还（§4.4）：记录唤起前的焦点 ---------- */
-  const focusMemory = {
-    lastExternal: null,
-    remember() {
-      const a = document.activeElement;
-      if (a && a !== document.body && !a.closest("#xj-stage")) {
-        this.lastExternal = a;
-      }
-    },
-    restore() {
-      if (this.lastExternal && document.contains(this.lastExternal)) {
-        try {
-          this.lastExternal.focus({ preventScroll: true });
-        } catch (_) {}
-      }
-      const active = document.activeElement;
-      if (active && active.closest && active.closest("#xj-stage")) {
-        active.blur();
-      }
-      document.body.focus({ preventScroll: true });
-    },
-  };
-
-  /* ---------- 环境 ---------- */
-  const env = {
-    dpr: () => window.devicePixelRatio || 1,
-    isReducedMotion: () =>
-      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    isWindows: /Windows/.test(navigator.userAgent),
-    accentDark: true,
-  };
-
   XJ.platform = {
     store,
-    clipboard,
     pickFiles,
     readAsDataURL,
     readAsText,
     classifyFile,
     prepareAttachment,
     comboFromEvent,
-    parseCombo,
-    matchCombo,
     playChime,
-    focusMemory,
-    env,
-    isMac,
   };
 })();

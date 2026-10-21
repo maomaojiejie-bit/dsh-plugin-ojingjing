@@ -3,8 +3,7 @@
    ========================================================================== */
 (function () {
   const XJ = (window.XJ = window.XJ || {});
-  const { h, fmtRel, truncate } = XJ.dom;
-  const S = () => XJ.state.store.state;
+  const { h, truncate } = XJ.dom;
   const A = () => XJ.state.actions;
 
   /* ============================ 收起态 ============================ */
@@ -15,7 +14,13 @@
     const orb = h(
       "div",
       {
-        class: "orb" + (s.connection === "offline" ? " is-offline" : ""),
+        // is-offline / is-reconnecting 不只为视觉：连接态变化必须让 stage HTML 变化，
+        // 否则 render 的 diff 闸门会把「重连恢复」整段跳过，B3 的苏醒动画就没了触发点
+        //（reconnecting 和 online 的表情/光环可以一模一样，光看 whale 是分别不出来的）。
+        class:
+          "orb" +
+          (s.connection === "offline" ? " is-offline" : "") +
+          (s.connection === "reconnecting" ? " is-reconnecting" : ""),
         role: "button",
         tabindex: "0",
         "aria-label": "哦鲸鲸 · " + st.label + (counts.pending ? "，" + counts.pending + " 项待确认" : ""),
@@ -32,7 +37,7 @@
           XJ.app.openPanel();
         },
         onmouseenter: () => XJ.app.orbHoverStart(),
-        onmouseleave: () => XJ.app.orbHoverEnd(),
+        onmouseleave: (e) => XJ.app.orbHoverEnd(e),
       },
       h("div", { class: "aura aura-" + st.aura + (st.aura !== "none" ? " show" : "") }),
       XJ.ui.whale(st.expression, 52),
@@ -175,7 +180,7 @@
 
     return h(
       "div",
-      { class: "form bubble glass", onmouseenter: () => XJ.app.cancelHoverTimer(), onmouseleave: () => XJ.app.orbHoverEnd() },
+      { class: "form bubble glass", onmouseenter: () => XJ.app.cancelHoverTimer(), onmouseleave: (e) => XJ.app.orbHoverEnd(e) },
       head,
       lineNode,
       rows,

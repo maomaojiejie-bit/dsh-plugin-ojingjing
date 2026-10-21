@@ -1,28 +1,25 @@
 # ---- 构建产物 ----
 dist/
+dist-poc/
+build-poc/
+build/
 .npm-cache/
+.pyinstaller/
+
 # 注：web/app.html 与 web/static/ 虽然也是构建产物，但 npm 包要带上，
 # 所以故意不忽略，改完 app/ 记得跑 node tools/build-plugin.mjs 同步。
 
-# ---- 独立窗运行期状态 ----
-standalone-py/.venv/
-standalone-py/.venv.broken-*/
-standalone-py/data/
-standalone-py/__pycache__/
-standalone-py/out.txt
-standalone-py/err.txt
-standalone-py/*.log
+# ---- 外壳构建产物 / 依赖 ----
+# C# 外壳的三个 WebView2 DLL 从 NuGet 取（见 standalone-cs/README.md），9MB 二进制不入库
+standalone-cs/sdk/
+# exe 内嵌的页面包：build-shell-cs 每次从 web/ 重新打，不入库
+standalone-cs/payload.zip
 
-# ---- PyInstaller 一次性验证产物（正式打包走 Ojingjing.spec，输出在 dist/） ----
-dist-poc/
-build-poc/
+# ---- 外壳运行期状态 ----
+# 配置目录写不进 %APPDATA% 时的回退（日志 / 窗口位置 / 解包出来的页面）
+standalone-cs/data/
 
-# ---- 本地调试截图（评审图在 docs/screenshots/） ----
+# ---- 本地调试产物（截图、探针脚本、CDP 压测数据） ----
 .shots/
-
-# ---- 本地代理工作区数据（不上传） ----
 .workbuddy/
-.pyinstaller/
-
-# ---- PyInstaller �м�Ŀ¼����ʽ����� dist/��----
-build/
+.workbuddy-ai/

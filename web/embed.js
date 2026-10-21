@@ -26,6 +26,15 @@
     if (window.__XJ_RENDER__ === "sw") document.documentElement.classList.add("xj-sw");
   }
 
+  // 独立窗的 WebView2 外壳（host=app）：
+  //  1. 打上 xj-app —— 逐像素透明的窗口里 backdrop-filter「模糊的是透明」，
+  //     拿不到任何模糊效果却每帧都要算一遍，所以样式层直接换成实底玻璃；
+  //  2. 想省电也能吃 xj-sw（外壳通过 URL 加 &sw=1 或注入 window.__XJ_RENDER__ === "sw"）。
+  if (HOST === "app") {
+    document.documentElement.classList.add("xj-app");
+    if (window.__XJ_RENDER__ === "sw") document.documentElement.classList.add("xj-sw");
+  }
+
   /** 统一出口：独立窗给 WebView2 / Qt(QWebChannel) / pywebview，页面内给父窗口 */
   function post(message) {
     // Qt 外壳：QWebChannel 注入 window.xjNative；pywebview 外壳：window.pywebview.api
@@ -56,6 +65,96 @@
   }
 
   document.documentElement.classList.add("xj-embed");
+
+  /* 外壳回报的「指针在不在窗口里」。
+     WebView2 在自己被 resize 之后会丢掉 :hover（CSS 以为指针走了、也不补发 enter），
+     悬停收起要是信 CSS，就会 展开 → 收 → 展开 地弹。外壳拿真实光标判定，这里只当信箱。
+     没有外壳信号（浏览器预览、Qt 版）时是 null，页面退回用 :hover。 */
+  let pointerInside = null;
+  function onShellMessage(event) {
+    // WebView2 的 message 事件把 data 给成 JSON 字符串（我们是 PostWebMessageAsJson 发的）
+    let message = event && event.data !== undefined ? event.data : event;
+    if (typeof message === "string") {
+      try {
+        message = JSON.parse(message);
+      } catch (e) {
+        return false;
+      }
+    }
+    if (!message || !message.type) return false;
+    /* 连接状态（外壳版心跳）：DSH 关掉后宿主不会再推 connection.offline，
+       页面自己又不知道 —— 壳的探活是唯一真相来源。收到就让页面走和宿主
+       同一条路（XJ.state.actions.setConnection），球变黑白 + 灰虚线环，
+       但页面留在原地，点球照旧展开在线面板，数据停在最后一次。
+       页面可能比 app.js 先就绪，setConnection 还没挂，稍等重试几次。 */
+    if (message.type === "connection") {
+      const want = message.state === "offline" ? "offline" : "online";
+      let tries = 0;
+      const apply = () => {
+        const actions = window.XJ && window.XJ.state && window.XJ.state.actions;
+        if (actions && typeof actions.setConnection === "function") {
+          actions.setConnection(want);
+          return;
+        }
+        if (++tries < 20) setTimeout(apply, 150);
+      };
+      apply();
+      return true;
+    }
+    if (message.type === "pointer") {
+      pointerInside = !!message.inside;
+      document.body.dataset.pointerInside = pointerInside ? "1" : "0";
+      return true;
+    }
+    // 外壳兜底的「点了鲸鱼」：全屏游戏独占鼠标时窗口收不到鼠标消息，
+    // 外壳用全局按键状态补发一条，页面再按自己有没有收到真实事件去重
+    if (message.type === "shell-tap") {
+      if (window.XJ && window.XJ.app && window.XJ.app.shellTap) window.XJ.app.shellTap();
+      return true;
+    }
+    // 热键召唤：游戏独占前台时鼠标键盘都到不了页面，只能靠外壳的全局热键代为转发
+    if (message.type === "summon") {
+      if (window.XJ && window.XJ.app && window.XJ.app.summon) window.XJ.app.summon();
+      return true;
+    }
+    // 陪伴时长（A3）：C# 外壳记账，页面 postMessage 请求一次、这里回推一份快照。
+    // （py 壳走 QWebChannel 信号，不经这里；payload 与信号那份同形）
+    if (message.type === "companion") {
+      if (window.XJ && window.XJ.app && window.XJ.app.companionData) window.XJ.app.companionData(message);
+      return true;
+    }
+    // 截图提问：外壳抓完图把整屏塞进来，剩下的卡片交互全在页面里（app/src/shot.js）
+    const shot = window.XJ && window.XJ.shot;
+    if (!shot) return false;
+    if (message.type === "shot") {
+      shot.open(message.dataUrl, {
+        width: message.width,
+        height: message.height,
+        sessionTitle: message.sessionTitle || "",
+      });
+      return true;
+    }
+    if (message.type === "shot-done") {
+      shot.done(!!message.ok, message.message || "");
+      return true;
+    }
+    if (message.type === "shot-polished") {
+      shot.polished(message.text || "");
+      return true;
+    }
+    if (message.type === "shot-polish-failed") {
+      shot.polishFailed(message.reason || "");
+      return true;
+    }
+    return false;
+  }
+  if (HOST === "app" && webview && typeof webview.addEventListener === "function") {
+    try {
+      webview.addEventListener("message", onShellMessage);
+    } catch (e) {
+      /* 老运行时没有这个 API，就用 :hover 顶着 */
+    }
+  }
   document.addEventListener("DOMContentLoaded", () => document.body.classList.add("embed"));
 
   /* XJ.mock 命名空间兜底：原型态由 mock.js 提供 { Harness, SAMPLES, seedSessions }，
@@ -75,6 +174,7 @@
   const MAX_H = 900;
   let lastW = 0;
   let lastH = 0;
+  let lastCard = "";
   let pending = 0;
 
   function measure() {
@@ -90,8 +190,88 @@
     return { w, h };
   }
 
+  /**
+   * 量「窗口真正该露出来的那几块区域」，单位是**物理像素**（已乘 devicePixelRatio）。
+   *
+   * 为什么是复数：气泡 / 输入条形态下 stage 里有两个 .form（气泡 + 鲸鱼球），中间还隔着
+   * 12px 的 gap。早期只报一个 stage 外接矩形，外壳只能把整块矩形裁出来 ——
+   * 于是气泡和球之间、球下面那一大片空白就露出一整块深底（2026-10-21 老大报的
+   * 「窗口还是会有一大块黑色背景」）。现在每个 .form 一块，外壳用 CombineRgn 并起来，
+   * 空隙真的被切掉，桌面直接透过来。
+   *
+   * 为什么乘 dpr：SetWindowRgn 吃的是物理像素，web/embed 里量到的是 CSS px。
+   * 125% 缩放下两者差 1.25 倍，不换算在非 100% 的屏上会裁歪一整圈。
+   */
+  function cardRects() {
+    const stage = document.getElementById("xj-stage") || document.body.firstElementChild;
+    if (!stage) return null;
+    const scale = window.devicePixelRatio || 1;
+    const forms = stage.querySelectorAll ? stage.querySelectorAll(".form") : [];
+    const nodes = forms.length ? forms : [stage];
+    const out = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      // 离场中的那份已经淡出、高度塌到 0，不该参与裁剪
+      if (el.classList && el.classList.contains("xj-leaving")) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      const rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+      // 状态光环（.aura：待确认琥珀 / 离线灰虚线 / 未读绿闪）画在**球外面**：
+      // inset:-3px 撑出 3px，再加 2px 的 box-shadow spread 或 border 宽，视觉外沿在球外 5px。
+      // 这部分量不到（aura 一直在转，getBoundingClientRect 对旋转元素返回轴对齐外接框，
+      // 70px 的环会报 90 多），所以按 CSS 里的 inset + 2 直接把这块矩形撑出去 ——
+      // 不撑的话窗口外形会把光环整圈切掉（2026-10-21 实测：离线灰虚线环直接消失）。
+      let pad = 0;
+      const aura = el.querySelector ? el.querySelector(".aura.show") : null;
+      if (aura) {
+        const inset = Math.abs(parseFloat(getComputedStyle(aura).top) || 0);
+        pad = (inset > 0 ? inset : 3) + 2;
+      }
+      out.push({
+        x: Math.round((r.left - pad) * scale),
+        y: Math.round((r.top - pad) * scale),
+        w: Math.round((r.width + pad * 2) * scale),
+        h: Math.round((r.height + pad * 2) * scale),
+        r: Math.round(rad * scale),
+      });
+    }
+
+    /* 探出球体的小角标（.badges 里的 .badge：待确认琥珀、未读绿）是绝对定位**在球外面**的，
+       form 的 rect 量不到。外壳按球的椭圆裁的时候会把角标切掉一半 —— 2026-10-21 踩到。
+       每个角标单独报一块，外壳对「小尺寸块」建椭圆再 OR 合并，结果正好是「球 + 角标」。 */
+    const badges = stage.querySelectorAll ? stage.querySelectorAll(".badges .badge") : [];
+    for (let i = 0; i < badges.length; i++) {
+      const el = badges[i];
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) continue;
+      const rad = parseFloat(cs.borderTopLeftRadius);
+      out.push({
+        x: Math.round(r.left * scale),
+        y: Math.round(r.top * scale),
+        w: Math.round(r.width * scale),
+        h: Math.round(r.height * scale),
+        r: Math.round((isNaN(rad) ? r.width / 2 : rad) * scale),
+      });
+    }
+    return out.length ? out : null;
+  }
+
   function reportSize() {
     if (HOST === "page" && (!window.parent || window.parent === window)) return;
+    // 卡片几何：C# 独立窗是「不透明 + SetWindowRgn 裁外形」，页面里的 stage 有 22px
+    // 内缩（双角标探出 + 呼吸光晕的空间），整窗裁剪会让透明内缩区透出窗体深底，
+    // 看上去就是「大黑框套着小卡」（2026-10-21 老大报的）。外壳按下面报的
+    // 每一块 .form 裁，内缩和 form 之间的空隙都被切掉，桌面干净。
+    const rects = cardRects();
+    if (rects) {
+      const sig = JSON.stringify(rects);
+      if (sig !== lastCard) {
+        lastCard = sig;
+        post({ type: "card", rects: rects });
+      }
+    }
     const m = measure();
     if (!m) return;
     // 2px 之内当作亚像素抖动，不上报
@@ -144,9 +324,18 @@
   });
 
   /* ------------------------ 真实数据 Harness ------------------------ */
-  const unsupported = (what) => {
+  const unsupported = (what, msg) => {
     const err = new Error(what + " not supported in DSH overlay");
     err.code = 503;
+    if (msg) err.userMessage = msg;
+    return err;
+  };
+
+  /** 带「能直接给用户看」的文案的错误：composer 优先显示 userMessage */
+  const userErr = (code, msg) => {
+    const err = new Error(msg);
+    err.code = code;
+    err.userMessage = msg;
     return err;
   };
 
@@ -164,6 +353,9 @@
       this.ticks = 0;
       this.usage = null;
       this.usageSig = "";
+      // 附件暂存：composer 先 uploadAttachment(att) 拿 id，发送时只回传 id 列表，
+      // 所以这里得自己留一份「id → 原始 att」，好在 prompt 时把 data URL 内联进请求体。
+      this.uploads = new Map();
     }
 
     on(fn) {
@@ -307,17 +499,128 @@
       return await res.json();
     }
 
-    prompt() {
-      return Promise.reject(unsupported("prompt"));
+    /**
+     * 发消息 → POST /xj/prompt。
+     * 宿主那条路由的载荷是 { sessionId, text, mode, image? }，图片以 base64 内联，
+     * 一次只收一张 —— 所以这里只认图片附件，且多于一张直接明说。
+     */
+    async prompt(sessionId, opts) {
+      const o = opts || {};
+      const text = typeof o.text === "string" ? o.text : "";
+      const ids = Array.isArray(o.attachment_ids) ? o.attachment_ids : [];
+
+      const images = [];
+      for (const id of ids) {
+        const att = this.uploads.get(String(id));
+        if (!att) continue; // 缓存里没有（换了页面/清过缓存）：当纯文字发，别把整条消息拦下来
+        if (att.kind !== "image") {
+          throw userErr(415, "内嵌浮窗只能发图片，文字文件请到主界面发");
+        }
+        if (att.preview) images.push(att);
+      }
+      if (images.length > 1) throw userErr(415, "一次只能发一张图，先留一张吧");
+
+      const body = { sessionId, text, mode: o.mode === "steer" ? "steer" : "queue" };
+      if (images.length === 1) {
+        const m = /^data:([^;,]+)(?:;[^,]*)?,([\s\S]*)$/.exec(images[0].preview || "");
+        if (!m) throw userErr(415, "这张图读不出来，换一张试试");
+        const mediaType = m[1].toLowerCase();
+        if (!/^image\/(png|jpeg|webp|gif)$/.test(mediaType)) {
+          throw userErr(415, "宿主只收 PNG / JPEG / WebP / GIF");
+        }
+        body.image = { mediaType, data: m[2], name: images[0].name || "" };
+      }
+
+      let res;
+      try {
+        res = await fetch("/xj/prompt", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (_) {
+        // 真的连不上宿主：交给 composer 走「离线」那条分支
+        const err = new Error("prompt network failed");
+        err.code = 503;
+        throw err;
+      }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const code = String(data && data.error ? data.error : "");
+        if (res.status === 413) throw userErr(413, "图太大了（上限 20MB），压一下再发");
+        if (res.status === 415) throw userErr(415, "这个格式宿主不收，换 PNG / JPEG");
+        if (res.status === 422) {
+          throw userErr(422, code === "missing_session" ? "先选一个会话再发" : "内容不能为空");
+        }
+        // prompt_unavailable 是宿主没拿到 sessionController，不是网络断了：
+        // 用 502 而不是 503，免得 composer 把整个界面切成离线态。
+        if (res.status === 503) throw userErr(502, "宿主没拿到会话控制器，重启 DSH 再试");
+        const err = new Error(code || "prompt failed");
+        err.code = res.status;
+        throw err;
+      }
+
+      const data = await res.json().catch(() => ({}));
+      // composer 只读 queued / session_id，其余字段留着方便排查
+      return {
+        ok: true,
+        queued: false,
+        session_id: sessionId,
+        message_id: o.clientMsgId || data.requestId || "",
+        request_id: data.requestId || "",
+      };
     }
-    stop() {
-      return Promise.reject(unsupported("stop"));
+
+    /** 附件：宿主路由只收内联图片，这里不做真实上传，只登记并回一个 id */
+    async uploadAttachment(att) {
+      if (!att) throw userErr(415, "附件读不出来");
+      if (att.kind !== "image") {
+        throw userErr(415, "内嵌浮窗只能发图片，文字文件请到主界面发");
+      }
+      const id = att.localId || "att_" + Math.random().toString(36).slice(2);
+      this.uploads.set(String(id), att);
+      // 缓存别无限长：够一次发送就行
+      if (this.uploads.size > 20) {
+        this.uploads.delete(this.uploads.keys().next().value);
+      }
+      return { attachment_id: id };
+    }
+
+    /**
+     * 停止当前这一轮 → POST /xj/stop。
+     * 宿主走 sessionController.cancel({ sessionId })：只取消正在跑的 turn，排队里的消息保留。
+     * 幂等：已经停了的会话再点一次也是 200，不用防连点。
+     */
+    async stop(sessionId) {
+      const id = String(sessionId || "").trim();
+      if (!id) throw userErr(422, "先选一个会话");
+
+      let res;
+      try {
+        res = await fetch("/xj/stop", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+      } catch (_) {
+        const err = new Error("stop network failed");
+        err.code = 503;
+        throw err;
+      }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 404) throw userErr(404, "这个会话已经不在跑了");
+        if (res.status === 422) throw userErr(422, "先选一个会话");
+        // 跟 /xj/prompt 一样：503 是「宿主没拿到控制器」，不是断网，别让界面切离线态
+        if (res.status === 503) throw userErr(502, "宿主没拿到会话控制器，重启 DSH 再试");
+        throw userErr(res.status, String((data && data.detail) || "没停下来，稍后再试"));
+      }
+      return await res.json().catch(() => ({ ok: true }));
     }
     newSession() {
-      return Promise.reject(unsupported("newSession"));
-    }
-    uploadAttachment() {
-      return Promise.reject(unsupported("uploadAttachment"));
+      return Promise.reject(unsupported("newSession", "浮窗里不能新建会话，去主界面开一个"));
     }
     tick() {}
     setConnected() {}
@@ -332,5 +635,7 @@
     post,
     harness: window.__XJ_EMBED_HARNESS__,
     reportSize,
+    // 外壳还没回报过就是 null（退回用 CSS :hover）
+    pointerInside: () => pointerInside,
   };
 })();

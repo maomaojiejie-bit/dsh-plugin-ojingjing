@@ -20,7 +20,6 @@ const MANIFEST = path.join(PROFILE, "package.json");
 const TARGET = path.join(PROFILE, "node_modules", NAME);
 // 宿主插件按这份配置去拉起独立窗（DSH 启动 → 哦鲸鲸自动出现）
 const SHELL_CONFIG = path.join(os.homedir(), ".dsh", "ojingjing-shell.json");
-const SHELL_DIR = path.join(ROOT, "standalone-py");
 
 // 改名前的旧包名：install 时顺手清掉旧目录/旧登记/旧 shell 配置，避免两个插件同时被加载
 const LEGACY = ["dsh-plugin-xiaojing"];
@@ -33,40 +32,14 @@ if (!fs.existsSync(MANIFEST)) {
   process.exit(1);
 }
 
-/**
- * 挑能跑 PySide6 的解释器，按优先级排成候选列表：
- *   1. 项目里的 venv（推荐，PySide6 装在这里）
- *   2. %LOCALAPPDATA%\Programs\Python\Python3*\pythonw.exe（系统装了 PySide6 的情况）
- *   3. C:\Windows\pyw.exe（Python Launcher，最后兜底）
- * 宿主会取第一个真实存在的。
- */
-function shellLaunchers() {
-  const list = [];
-  const venvPy = path.join(SHELL_DIR, ".venv", "Scripts", "pythonw.exe");
-  if (fs.existsSync(venvPy)) list.push(venvPy);
-
-  const pythonRoot = path.join(os.homedir(), "AppData", "Local", "Programs", "Python");
-  if (fs.existsSync(pythonRoot)) {
-    for (const name of fs.readdirSync(pythonRoot)) {
-      if (!/^Python3/i.test(name)) continue;
-      const exe = path.join(pythonRoot, name, "pythonw.exe");
-      if (fs.existsSync(exe)) list.push(exe);
-    }
-  }
-
-  const pyw = path.join(process.env.SystemRoot || "C:\\Windows", "pyw.exe");
-  if (fs.existsSync(pyw)) list.push(pyw);
-
-  return list;
-}
-
 function writeShellConfig() {
+  // 只有 C# 外壳一种（PySide6 那套 2026-10-21 已整条退役）
+  const csExe = path.join(ROOT, "dist", "Ojingjing-CS", "Ojingjing.exe");
   const payload = {
-    shellDir: SHELL_DIR,
-    script: "ojingjing_py.py",
-    launchers: shellLaunchers(),
+    exe: csExe,
+    workDir: path.dirname(csExe),
     autoLaunch: true,
-    note: "由 tools/install-plugin.mjs 生成；插件在 DSH 启动时按这里拉起独立窗。删掉本文件或把 autoLaunch 改 false 即可关掉自动启动。",
+    note: "由 tools/install-plugin.mjs 生成；插件在 DSH 启动时按这里拉起独立窗（C# 外壳）。删掉本文件或把 autoLaunch 改 false 即可关掉自动启动。",
   };
   fs.writeFileSync(SHELL_CONFIG, JSON.stringify(payload, null, 2) + "\n", "utf8");
   return payload;
@@ -144,6 +117,6 @@ console.log(`已登记 bundles（备份 package.json.bak-${stamp}）`);
 
 const shellCfg = writeShellConfig();
 console.log(`自动拉起配置：${SHELL_CONFIG}`);
-console.log(`  外壳目录 ${shellCfg.shellDir}`);
-console.log(`  解释器候选 ${shellCfg.launchers.length ? shellCfg.launchers.join(" | ") : "（没找到，自动拉起会跳过）"}`);
+// 只有 C# 外壳一种（PySide6 那套 2026-10-21 已整条退役），不再有目录 + 解释器候选的分支
+if (shellCfg.exe) console.log(`  外壳程序 ${shellCfg.exe}（C# 外壳）`);
 console.log("重启 DeepSeek Harness Desktop 后生效：DSH 起来时若哦鲸鲸没在跑，插件会自动拉起它。");

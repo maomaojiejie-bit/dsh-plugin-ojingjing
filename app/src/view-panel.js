@@ -5,7 +5,6 @@
 (function () {
   const XJ = (window.XJ = window.XJ || {});
   const { h, fmtRel, truncate } = XJ.dom;
-  const S = () => XJ.state.store.state;
   const A = () => XJ.state.actions;
 
   function panel(s) {
@@ -23,6 +22,7 @@
       header(s, st, counts),
       quickActions(s, counts),
       usageBar(s),
+      companionBar(s),
       hasPending ? pendingZone(s, pending) : null,
       sessionList(s),
       XJ.composer.render(s, "panel")
@@ -77,6 +77,30 @@
         class: loading ? "usage-refresh is-loading" : "usage-refresh",
         onClick: () => XJ.app.refreshUsage(),
       })
+    );
+  }
+
+  /* ---------------- 陪伴条（A3） ----------------
+     只有独立窗有账本（外壳记的：py 壳和 C# 壳共用 %APPDATA%\ojingjing\companionship.json），
+     内嵌态 / 原型里 s.companion 为 null，整条不出现。
+     语义是「窗口在 + 人也在一段时间里」——挂机不算，所以这个数字比「窗口开了多久」诚实。 */
+  function companionBar(s) {
+    const c = s.companion;
+    if (!c) return null;
+    const fmt = (XJ.lines && XJ.lines.fmtDur) || ((n) => Math.floor((Number(n) || 0) / 60) + " 分钟");
+    const title = [
+      "窗口可见、并且 5 分钟内有过键鼠输入才计时，挂机不算。",
+      "首次相识：" + (c.first_met || "—"),
+      "累计陪伴：" + fmt(c.total_sec),
+      "连续：" + c.streak_days + " 天",
+      "只存在本机，不上传。",
+    ].join("\n");
+    return h(
+      "div",
+      { class: "company-bar", role: "status", title: title },
+      h("i", { class: "company-k" }, "陪伴"),
+      h("b", { class: "company-v" }, "今天 " + fmt(c.today_sec)),
+      h("span", { class: "company-sub" }, "相识第 " + c.days_known + " 天 · 累计 " + fmt(c.total_sec))
     );
   }
 
@@ -152,8 +176,15 @@
   /* ---------------- 审批区（钉顶） ---------------- */
   function pendingZone(s, list) {
     // 面板内只钉一张卡：多出来的去审批中心看（§8.3 审批卡不进滚动区 → 不能靠滚动塞下多张）
-    const shown = list.slice(0, 1);
+    // D1：钉哪一张由 s.ui.pendingCursor 决定 —— ←/→ 换，1 通过 / 2 拒绝都作用在它身上。
+    const cursorId = s.ui.pendingCursor;
+    const cursor = (cursorId && list.find((x) => x.id === cursorId)) || list[0] || null;
+    const shown = cursor ? [cursor] : [];
     const more = list.length - shown.length;
+    const idx = cursor ? list.indexOf(cursor) + 1 : 0;
+    // 批量只放行 read 档：其余档（尤其 danger）必须一条一条看
+    const readCount = list.filter((x) => x.kind === "approval" && x.risk === "read" && x.status === "pending").length;
+
     return h(
       "div",
       { class: "approval-zone" },
@@ -164,9 +195,45 @@
         h("span", null, "需要你点头"),
         h("span", { class: "count" }, list.length),
         h("span", { class: "spacer" }),
-        more > 0 ? h("button", { onclick: () => XJ.app.openApprovalCenter() }, "查看全部 " + list.length + " 项") : null
+        list.length > 1
+          ? h(
+              "span",
+              { class: "pending-nav" },
+              h(
+                "button",
+                { class: "pending-nav-btn", title: "上一条（←）", onclick: () => XJ.app.movePendingCursor(-1) },
+                "‹"
+              ),
+              h("span", { class: "pending-nav-idx" }, idx + "/" + list.length),
+              h(
+                "button",
+                { class: "pending-nav-btn", title: "下一条（→）", onclick: () => XJ.app.movePendingCursor(1) },
+                "›"
+              )
+            )
+          : null,
+        more > 0 ? h("button", { onclick: () => XJ.app.openApprovalCenter() }, "查看全部") : null
       ),
       shown.map((item) => pendingCard(s, item)),
+      // 批量放行 + 键盘提示：键盘提示只在面板首页有意义，但它占位很小，一直在也不碍事
+      h(
+        "div",
+        { class: "appr-batch" },
+        readCount > 0
+          ? h(
+              "button",
+              {
+                class: "btn-mini appr-batch-btn",
+                title: "只放行「读文件」这一档，其余档仍然逐条确认",
+                onclick: () => XJ.app.approveAllRead(),
+              },
+              XJ.icon("check", 11),
+              "通过全部 " + readCount + " 项只读"
+            )
+          : h("span", null),
+        h("span", { class: "spacer" }),
+        h("span", { class: "appr-keys", title: "面板开着、光标不在输入框里时有效" }, "1 通过 · 2 拒绝 · ←/→ 换一条")
+      ),
       more > 0
         ? h(
             "button",
@@ -753,9 +820,5 @@
 
   XJ.views = XJ.views || {};
   XJ.views.panel = panel;
-  XJ.views.approvalCard = approvalCard;
   XJ.views.pendingCard = pendingCard;
-  XJ.views.questionCard = questionCard;
-  XJ.views.sessionCard = sessionCard;
-  XJ.views.header = header;
 })();

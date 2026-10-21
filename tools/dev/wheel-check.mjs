@@ -1,56 +1,15 @@
 /* 验证滚轮缓动：找到真正的滚动容器，在它中心发滚轮，采样 scrollTop 是否逐帧逼近 */
-import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { connect, launchChrome, sleep } from "./cdp.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 9347;
-const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const proc = spawn(
-  CHROME,
-  [
-    "--headless=new",
-    "--disable-gpu",
-    "--hide-scrollbars",
-    "--no-first-run",
-    "--force-device-scale-factor=1",
-    `--remote-debugging-port=${PORT}`,
-    `--user-data-dir=${mkdtempSync(join(tmpdir(), "xj-w4-"))}`,
-    "--window-size=1440,900",
-    "about:blank",
-  ],
-  { stdio: "ignore" }
-);
+const chrome = launchChrome(PORT, { prefix: "xj-w4-" });
+const { send, close } = await connect(PORT);
 
-let target;
-for (let i = 0; i < 75 && !target; i++) {
-  await sleep(200);
-  try {
-    const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-    target = list.find((t) => t.type === "page" && t.webSocketDebuggerUrl);
-  } catch {}
-}
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-const pending = new Map();
-let seq = 0;
-const send = (m, p = {}) =>
-  new Promise((r) => {
-    const id = ++seq;
-    pending.set(id, r);
-    ws.send(JSON.stringify({ id, method: m, params: p }));
-  });
-await new Promise((r) => ws.addEventListener("open", r));
-ws.addEventListener("message", (ev) => {
-  const m = JSON.parse(ev.data);
-  if (m.id && pending.has(m.id)) {
-    pending.get(m.id)(m);
-    pending.delete(m.id);
-  }
-});
 const evalJs = async (expr) => {
   const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true });
   if (r.result?.exceptionDetails) console.log("eval error:", r.result.exceptionDetails.text);
@@ -113,5 +72,6 @@ const distinct = new Set(samples).size;
 console.log("不同值个数 =", distinct, distinct > 3 ? "（有缓动过程 ✅）" : "（一步到位或没动 ❌）");
 
 await send("Browser.close").catch(() => {});
-proc.kill();
+close();
+chrome.close();
 process.exit(0);

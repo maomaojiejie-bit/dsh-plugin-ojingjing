@@ -4,13 +4,13 @@
    ========================================================================== */
 (function () {
   const XJ = (window.XJ = window.XJ || {});
-  const { h, fmtClock, fmtDuration, truncate } = XJ.dom;
+  const { h, fmtClock, fmtDuration } = XJ.dom;
   const S = () => XJ.state.store.state;
   const A = () => XJ.state.actions;
 
   /* ---------------- 关于 / 检查更新（接 git 仓库） ----------------
-     外壳（Qt）把 version/repo/releases 推进 window.__XJ_SHELL__（见
-     standalone-py/ojingjing_py.py 的 push_shell_info），浏览器里跑原型时用下面的默认值。
+     外壳可以把 version/repo/releases 推进 window.__XJ_SHELL__；C# 外壳目前不注入
+     （它没有要上报的版本信息），所以浏览器原型和独立窗里都用下面的默认值。
      检查更新打 GitHub 的 releases/latest：
        · 200 → 和本地版本比 semver。原来是 latest !== VERSION 直接比字符串，
                0.3.10 会被判成比 0.3.9 小，这种坑等发到两位数版本就要咬人。

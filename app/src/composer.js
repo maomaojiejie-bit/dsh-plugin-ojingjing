@@ -381,6 +381,9 @@
       if (code === 503) {
         XJ.state.actions.setConnection("offline");
         c.error = "发送失败：Harness 未响应，草稿已保留";
+      } else if (err && err.userMessage) {
+        // 宿主已经知道原因了（只收图片 / 图太大 / 没选会话…）：直说，别让用户猜
+        c.error = "发送失败：" + err.userMessage;
       } else {
         c.error = "发送失败：没发出去，重试一下？";
       }

@@ -6,18 +6,15 @@
    ========================================================================== */
 (function () {
   const XJ = (window.XJ = window.XJ || {});
-  const D = XJ.dom;
 
   /* ---------- 术语与枚举（§17.3 统一用词） ---------- */
   const RISK = {
-    read: { label: "读文件", rank: 1, hint: "读取项目里的文件内容", scopeAllowed: true },
-    write: { label: "写文件", rank: 2, hint: "修改项目里的文件", scopeAllowed: false },
-    exec: { label: "执行命令", rank: 3, hint: "在你的项目目录执行一条命令", scopeAllowed: false },
-    network: { label: "网络访问", rank: 4, hint: "访问外部网络地址", scopeAllowed: false },
-    danger: { label: "删除 / 高危", rank: 5, hint: "删除文件或执行高危操作", scopeAllowed: false },
+    read: { label: "读文件", rank: 1, hint: "读取项目里的文件内容" },
+    write: { label: "写文件", rank: 2, hint: "修改项目里的文件" },
+    exec: { label: "执行命令", rank: 3, hint: "在你的项目目录执行一条命令" },
+    network: { label: "网络访问", rank: 4, hint: "访问外部网络地址" },
+    danger: { label: "删除 / 高危", rank: 5, hint: "删除文件或执行高危操作" },
   };
-
-  const SESSION_STATE = { working: "工作中", idle: "空闲" };
 
   /* ---------- 默认设置（§8.4 完整清单） ---------- */
   function defaultSettings() {
@@ -65,6 +62,9 @@
         error: "",
         loading: false,
       },
+      /* A3 陪伴时长：只有独立窗有（外壳记账，经 QWebChannel 推过来）；
+         DSH 内嵌态和原型里恒为 null，面板那条「陪伴」就不出现。 */
+      companion: null,
       sessions: [],
       approvals: {}, // id -> approval
       questions: {}, // id -> question
@@ -95,6 +95,8 @@
         screenshot: null, // 截图状态机（§9.2.2）
         stopConfirmSessionId: null,
         approvalDetailId: null,
+        // D1：面板首页钉着的那张审批卡（键盘 1/2 作用在它身上）。null = 用列表第一条。
+        pendingCursor: null,
         questionLocal: {}, // 提问卡的本地交互态 { [id]: { picked, draft, customOpen } }
         line: null, // 当前台词 { text, ctx, at }（lines.js 抽，hover 时刷新）
       },
@@ -266,13 +268,9 @@
   const store = {
     state: null,
     subs: new Set(),
-    logs: [],
     init() {
       this.state = createState();
       this.state.composer.targetSessionId = null;
-      return this.state;
-    },
-    get s() {
       return this.state;
     },
     subscribe(fn) {
@@ -296,10 +294,6 @@
           console.error("[哦鲸鲸] 订阅者异常", err);
         }
       }
-    },
-    patch(fn) {
-      fn(this.state);
-      this.emit();
     },
   };
 
@@ -487,6 +481,7 @@
       store.emit();
     },
 
+    /* 接真 SSE 事件时要用（当前只有 mock 直接改 store），刻意保留，别当死代码删 */
     sessionWorking(sessionId, action, progress) {
       const s = store.state;
       const sess = sessionById(s, sessionId);
@@ -496,12 +491,6 @@
       sess.progress = progress == null ? sess.progress : progress;
       sess.unread = false;
       sess.lastActivityAt = Date.now();
-      store.emit();
-    },
-
-    setActiveSession(sessionId) {
-      const s = store.state;
-      s.sessions.forEach((x) => (x.active = x.id === sessionId));
       store.emit();
     },
 
@@ -524,12 +513,6 @@
     setPanelScreen(screen) {
       store.state.ui.panelScreen = screen;
       store.emit();
-    },
-
-    composerText(text) {
-      store.state.composer.text = text;
-      // 不 emit：避免每次按键重渲染打断输入
-      XJ.platform.store.set("draft", { text, at: Date.now() });
     },
 
     composerTarget(sessionId) {
@@ -582,6 +565,39 @@
 
     usageLoading(on) {
       store.state.usage.loading = !!on;
+      store.emit();
+    },
+
+    /** D1：键盘流当前作用在哪张审批卡上 */
+    setPendingCursor(id) {
+      const s = store.state;
+      if (s.ui.pendingCursor === id) return;
+      s.ui.pendingCursor = id || null;
+      store.emit();
+    },
+
+    /** 陪伴快照（A3）：外壳经 QWebChannel 推过来的，只有独立窗有 */
+    setCompanion(c) {
+      const s = store.state;
+      if (!c || typeof c !== "object") return;
+      const next = {
+        first_met: String(c.first_met || ""),
+        days_known: Number(c.days_known) || 1,
+        total_sec: Number(c.total_sec) || 0,
+        today_sec: Number(c.today_sec) || 0,
+        streak_days: Number(c.streak_days) || 1,
+      };
+      const prev = s.companion;
+      // 秒数在涨，但不值得每秒重绘一次：同一天、同一个「分钟」就不动
+      const same =
+        prev &&
+        prev.first_met === next.first_met &&
+        prev.days_known === next.days_known &&
+        prev.streak_days === next.streak_days &&
+        Math.floor(prev.today_sec / 60) === Math.floor(next.today_sec / 60) &&
+        Math.floor(prev.total_sec / 60) === Math.floor(next.total_sec / 60);
+      if (same) return;
+      s.companion = next;
       store.emit();
     },
   };

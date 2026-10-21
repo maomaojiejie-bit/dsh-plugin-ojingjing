@@ -3,16 +3,15 @@
    用法：node tools/shoot.mjs panel approve capture-edit capture-confirm send
    依赖：本机 Chrome（Windows 默认安装路径）；Node 24 自带 WebSocket / fetch
    ========================================================================== */
-import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { connect, launchChrome, sleep } from "./dev/cdp.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SHOTS = join(ROOT, "docs", "screenshots");
 const PORT = 9337;
-const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const W = 1440;
 const H = 900;
 
@@ -305,77 +304,16 @@ const scenarios = {
 };
 
 /* ------------------------------ CDP 基础 ------------------------------ */
-function launch() {
-  const profile = mkdtempSync(join(tmpdir(), "xj-cdp-"));
-  const proc = spawn(
-    CHROME,
-    [
-      "--headless=new",
-      "--disable-gpu",
-      "--hide-scrollbars",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-features=Translate",
-      "--force-prefers-reduced-motion",
-      "--force-device-scale-factor=1",
-      `--remote-debugging-port=${PORT}`,
-      `--user-data-dir=${profile}`,
-      `--window-size=${W},${H}`,
-      "about:blank",
-    ],
-    { stdio: "ignore" }
-  );
-  return proc;
-}
-
-async function waitTargets(timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-      const list = await res.json();
-      const page = list.find((t) => t.type === "page");
-      if (page && page.webSocketDebuggerUrl) return page;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  throw new Error("CDP target 超时");
-}
-
-function connect(url) {
-  return new Promise((res, rej) => {
-    const ws = new WebSocket(url);
-    const pending = new Map();
-    let seq = 0;
-    ws.addEventListener("open", () => {
-      const send = (method, params = {}) =>
-        new Promise((resolveP, rejectP) => {
-          const id = ++seq;
-          pending.set(id, { resolveP, rejectP });
-          ws.send(JSON.stringify({ id, method, params }));
-        });
-      ws.addEventListener("message", (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.id && pending.has(msg.id)) {
-          const { resolveP } = pending.get(msg.id);
-          pending.delete(msg.id);
-          resolveP(msg);
-        }
-      });
-      res({ ws, send });
-    });
-    ws.addEventListener("error", rej);
-  });
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* launch/waitTarget/connect 都在 dev/cdp.mjs；本文件只留场景表与拍摄流程 */
 
 async function main() {
   const wanted = process.argv.slice(2);
   const list = wanted.length ? wanted : Object.keys(scenarios);
-  const proc = launch();
-  const target = await waitTargets();
-  const { send } = await connect(target.webSocketDebuggerUrl);
+  const chrome = launchChrome(PORT, {
+    prefix: "xj-cdp-",
+    extraFlags: ["--no-default-browser-check", "--disable-features=Translate", "--force-prefers-reduced-motion"],
+  });
+  const { send, close } = await connect(PORT);
 
   await send("Page.enable");
   await send("Runtime.enable");
@@ -449,7 +387,8 @@ async function main() {
   }
 
   await send("Browser.close").catch(() => {});
-  proc.kill();
+  close();
+  chrome.close();
   process.exit(0);
 }
 
