@@ -223,7 +223,7 @@ ojingjing-widget/
 │   ├── sdk/                     WebView2 SDK 的三个 DLL（编译用，不入库）
 │   └── README.md                外壳说明（功能、体积、环境变量、消息协议）
 ├── assets/icon-source.png  头像原图（tools/prep-avatar.py 的输入）
-├── releases/v0.4.1.md      GitHub Release 的发布说明（版本号与 tag 同名，tools/release.mjs 直接取这份）
+├── releases/v0.5.0.md      GitHub Release 的发布说明（版本号与 tag 同名，tools/release.mjs 直接取这份）
 ├── docs/                   设计方案与调研（独立窗流畅度方案.md 等，非构建输入）
 ├── ROADMAP.md              v0.5 任务清单与完成度
 ├── .shots/                 自检截图：verify-avatar-app.png · verify-whale-svg.png

@@ -116,7 +116,7 @@ writeFileSync(
     "DSH 开着的话，启动几秒内会自动连上 127.0.0.1:<port> 的插件页面，换成带真实数据的那版；",
     "DSH 关掉之后页面留在原地，球变黑白，点球照样能开面板。",
     "",
-    "设置与窗口位置读 %APPDATA%\\ojingjing\\settings.json 与 window.json（和 Python 版共用）；",
+    "设置与窗口位置读 %APPDATA%\\ojingjing\\settings.json 与 window.json；",
     "写不进去时（安全软件拦进程写 AppData）自动退到 exe 旁边的 data\\ 目录，日志也在那儿。",
     "内置页面解包在同一目录的 web\\ 下（按版本分子目录，可随时删）。",
     "",
