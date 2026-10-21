@@ -1470,16 +1470,66 @@
     }, 20000);
   }
 
+  /**
+   * 真探一次连接，别自说自话。
+   *
+   * 为什么分两条路：外壳里的内置页挂在 https://ojingjing.local 这个虚拟主机上，
+   * 那里只有静态文件，`/xj/state` 永远 404 —— 页面靠自己的 fetch 判断不出 DSH 起没起
+   * （2026-10-21 老大报的「没启动 DSH 点重连也提示连接成功」，根因就是这条：旧代码
+   * 直接 `setConnection("online")`，谁都没问）。所以内置页必须问外壳，外壳探活成功
+   * 会把页面切到服务器那版，那时候才有真数据。插件态 / 浏览器预览下 `/xj/state`
+   * 就是权威，直接拉一次即可。
+   */
+  async function probeConnection() {
+    const embedded = !!(XJ.embed && XJ.embed.enabled);
+    const localPage = location.hostname === "ojingjing.local";
+    if (embedded && localPage && XJ.embed.probeShell) {
+      return await XJ.embed.probeShell(5000);
+    }
+    try {
+      const res = await fetch("/xj/state", { cache: "no-store" });
+      if (!res.ok) return false;
+      await res.json();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function reconnect() {
     clearTimeout(offlineTimer);
     A().setConnection("reconnecting");
     XJ.ui.toast({ type: "info", title: "正在重新连接…", sub: "第 " + (reconnectAttempt + 1) + " 次尝试" });
-    await wait(500);
-    XJ.mock.harness.setConnected(true);
+    reconnectAttempt++;
+
+    // 原型（直接开 app/index.html）没有后端可言，恢复 mock 就是「连上了」；
+    // 一旦嵌进外壳就是真探测，连不上必须老老实实黑着。
+    const embedded = !!(XJ.embed && XJ.embed.enabled);
+    let ok;
+    if (embedded) {
+      ok = await probeConnection();
+    } else {
+      await wait(500);
+      XJ.mock.harness.setConnected(true);
+      ok = true;
+    }
+
+    if (!ok) {
+      A().setConnection("offline");
+      XJ.ui.toast({
+        type: "warn",
+        title: "还是连不上",
+        sub: "DSH 没在运行。先把它打开，再点一次重连",
+        duration: 6000,
+      });
+      return false;
+    }
+
     loadSnapshot();
     A().setConnection("online");
     reconnectAttempt = 0;
     XJ.ui.toast({ type: "success", title: "连接已恢复", sub: "已重新拉取一次快照对账" });
+    return true;
   }
 
   /* ============================ 审批 / 停止 ============================ */

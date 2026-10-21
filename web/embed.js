@@ -71,6 +71,40 @@
      悬停收起要是信 CSS，就会 展开 → 收 → 展开 地弹。外壳拿真实光标判定，这里只当信箱。
      没有外壳信号（浏览器预览、Qt 版）时是 null，页面退回用 :hover。 */
   let pointerInside = null;
+
+  /* 「立即重连」的回执信箱。
+     内置页（https://ojingjing.local）挂在虚拟主机上，没有 /xj/state 也没有 /xj/decide，
+     页面自己 fetch 只会 404 —— 它没法判断 DSH 起没起，必须问外壳，外壳再回一条结论。
+     同一时刻只允许一次在飞：用户连点两下时后面的直接复用前面那个 promise。 */
+  let shellProbeWaiter = null;
+  let shellProbeInflight = null;
+
+  /**
+   * 让外壳立刻探一拍：resolve(true) 表示 DSH 真的活着（外壳此时会顺手把页面切到服务器那版）。
+   * 没有外壳（浏览器预览 / 插件态）时直接 resolve(false)，由调用方自己 fetch 判断。
+   */
+  function probeShell(timeoutMs) {
+    if (shellProbeInflight) return shellProbeInflight;
+    if (!(HOST === "app" && webview && typeof webview.postMessage === "function")) {
+      return Promise.resolve(false);
+    }
+    shellProbeInflight = new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        shellProbeWaiter = null;
+        shellProbeInflight = null;
+        resolve(ok);
+      };
+      shellProbeWaiter = finish;
+      post({ type: "reconnect" });
+      // 外壳那一拍最坏要扫 70 多个端口（2s）+ 拉一次页面（1.5s），给足 5s。
+      // 超时就当连不上：宁可让人再点一次，也别骗出一个假的「已恢复」。
+      setTimeout(() => finish(false), timeoutMs || 5000);
+    });
+    return shellProbeInflight;
+  }
   function onShellMessage(event) {
     // WebView2 的 message 事件把 data 给成 JSON 字符串（我们是 PostWebMessageAsJson 发的）
     let message = event && event.data !== undefined ? event.data : event;
@@ -99,6 +133,14 @@
         if (++tries < 20) setTimeout(apply, 150);
       };
       apply();
+      return true;
+    }
+    /* 外壳对「立即重连」的答复。ok=false 时页面必须老老实实黑回去 ——
+       这条链以前是页面自己 `setConnection("online")` 收场，DSH 没开也报成功。 */
+    if (message.type === "reconnect-result") {
+      const waiter = shellProbeWaiter;
+      shellProbeWaiter = null;
+      if (waiter) waiter(!!message.ok);
       return true;
     }
     if (message.type === "pointer") {
@@ -623,6 +665,12 @@
       return Promise.reject(unsupported("newSession", "浮窗里不能新建会话，去主界面开一个"));
     }
     tick() {}
+    /**
+     * 故意是空实现：嵌入态的「连上了没」只有一个真相来源 —— 1.5s 一次的 /xj/state
+     * 轮询（成功才 emit connection.online），以及外壳探活推过来的 connection 消息。
+     * 页面没有任何办法靠一句话把连接变出来（以前 app.js 的 reconnect 就在这里调它，
+     * 结果 DSH 没开也提示「连接已恢复」）。要重连请用 XJ.app.reconnect()，它走 probeShell。
+     */
     setConnected() {}
     reset() {}
   }
@@ -635,6 +683,7 @@
     post,
     harness: window.__XJ_EMBED_HARNESS__,
     reportSize,
+    probeShell,
     // 外壳还没回报过就是 null（退回用 CSS :hover）
     pointerInside: () => pointerInside,
   };

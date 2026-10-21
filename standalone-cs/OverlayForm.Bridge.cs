@@ -10,11 +10,14 @@
 //   {type:"shot-capture"}       截一张（Ctrl+Shift+A 之外的入口）
 //   {type:"shot-action", action, text}  action = send / retake / polish / capture
 //   {type:"settings"}           在外壳里弹设置窗
+//   {type:"reconnect"}          页面点了「立即重连」：外壳马上探一拍，事后回 reconnect-result
+//                               （内置页够不到后端，页面自己判断不了 DSH 在不在）
 //
 // 外壳 → 页面（PostWebMessageAsJson）：
 //   {type:"pointer", inside}    真实光标在不在窗口矩形里（WebView2 自己会判错 :hover）
 //   {type:"connection", state}  连接状态（offline / online）：DSH 关掉后宿主不再推
 //                               connection.offline，壳的探活替它告诉页面（见 TellPageOffline）
+//   {type:"reconnect-result", ok, port, reason?}  上一次 {type:"reconnect"} 的结论
 //   {type:"shell-tap"}          外壳补发的「点了鲸鱼」（窗口收不到鼠标消息时的兜底，见 OnClickWatch）
 //   {type:"shot", dataUrl, width, height, sessionTitle}
 //   {type:"shot-done", ok, message} / {type:"shot-polished", text} / {type:"shot-polish-failed", reason}
@@ -110,6 +113,10 @@ namespace Ojingjing
                 // 就知道是「点击没送到」还是「送到了但页面没反应」
                 lastPageAckAt = DateTime.UtcNow;
                 ShellSettings.Trace("页面收到点击 " + JsonInt(raw, "x") + "," + JsonInt(raw, "y"));
+            }
+            else if (type == "reconnect")
+            {
+                RequestProbeNow();
             }
             else if (type == "form")
             {

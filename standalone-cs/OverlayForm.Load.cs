@@ -255,6 +255,21 @@ namespace Ojingjing
             public bool PageOk;   // 该端口上的 /xj/app.html 能取到（2xx）
         }
 
+        /// <summary>
+        /// 页面点了「立即重连」：不等定时器，马上跑一拍探活，事后回一条 reconnect-result。
+        /// 由外壳代劳的原因见 OverlayForm.cs 里 manualProbe 的注释 —— 内置页够不到后端，
+        /// 页面自己既不知道 DSH 在不在，也没法把 /xj/state 拉回来。
+        /// </summary>
+        void RequestProbeNow()
+        {
+            // 先立牌子再决定跑不跑：忙的时候这一拍/下一拍收尾时会带着回执出去，
+            // 页面不会因为「正好在探」就被判成失败。
+            manualProbe = true;
+            if (navigating || probing) return;   // 正在切页 / 上一拍还没回来，等它收尾
+            ShellSettings.Trace("页面点了立即重连：马上探一次");
+            OnProbeTick(null, EventArgs.Empty);
+        }
+
         void OnProbeTick(object sender, EventArgs e)
         {
             probeTimer.Stop();
@@ -262,8 +277,9 @@ namespace Ojingjing
             if (navigating || probing) { probeTimer.Start(); return; }
             probing = true;
             int guess = serverPort > 0 ? serverPort : settings.Port;
-            // 已经在服务器那版上时不用每拍都拉页面，4 秒复核一次就够
-            bool checkPage = !onServerPage || (DateTime.UtcNow - lastPageCheck).TotalSeconds >= 4;
+            // 已经在服务器那版上时不用每拍都拉页面，4 秒复核一次就够；
+            // 但页面亲手点的「立即重连」必须真拉一次，不能拿上一拍的结论糊弄它。
+            bool checkPage = manualProbe || !onServerPage || (DateTime.UtcNow - lastPageCheck).TotalSeconds >= 4;
             if (checkPage) lastPageCheck = DateTime.UtcNow;
             System.Threading.ThreadPool.QueueUserWorkItem(delegate
             {
@@ -343,6 +359,13 @@ namespace Ojingjing
                 }
                 if (!onServerPage && !navigating)
                 {
+                    // 先把结论答给页面再切页：不然旧页面会一直等它的 5 秒超时，
+                    // 明明已经连上了却被判成「还是连不上」。
+                    if (manualProbe)
+                    {
+                        manualProbe = false;
+                        TellReconnectResult(true, serverPort);
+                    }
                     NavigateToServer();  // 自己会停定时器，OnNavDone 再拉回来
                     return;
                 }
@@ -362,6 +385,22 @@ namespace Ojingjing
             int idleInterval = probeMiss <= 1 ? 2000 : (probeMiss <= 3 ? 5000 : 8000);
             probeTimer.Interval = onServerPage ? 2000 : (r.Port > 0 ? 1000 : idleInterval);
             probeTimer.Start();
+
+            // 手动重连的回执：走到这里说明没有要靠导航换页的情况（要么本来就在服务器页、
+            // 要么干脆连不上），页面在等这个结论决定自己是黑着还是亮起来。
+            if (manualProbe)
+            {
+                manualProbe = false;
+                TellReconnectResult(r.Port > 0 && r.PageOk, r.Port);
+            }
+        }
+
+        /// <summary>把「立即重连」的结论回给页面（页面据此决定亮起来还是黑着）。</summary>
+        void TellReconnectResult(bool ok, int port)
+        {
+            SendToPage("{\"type\":\"reconnect-result\",\"ok\":" + (ok ? "true" : "false") +
+                       ",\"port\":" + (port > 0 ? port : 0) + "}");
+            ShellSettings.Trace("立即重连结果：" + (ok ? "连上了（端口 " + port + "）" : "仍然连不上"));
         }
 
         /// <summary>切到插件服务器那版（能拿真数据）。</summary>

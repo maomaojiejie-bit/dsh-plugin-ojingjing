@@ -79,6 +79,12 @@ namespace Ojingjing
         static int lastScanResult = -1;
         // 后台探活线程正在跑（UI 线程不能同步等，否则每秒卡一下，动画掉帧）
         bool probing;
+        // 页面点了「立即重连」：这一拍探活结束后要回一条 reconnect-result。
+        // 为什么要外壳代劳：内置页挂在 https://ojingjing.local 这个虚拟主机上，
+        // 那里没有 /xj/state 也没有 /xj/decide，页面自己 fetch 永远拿不到东西 ——
+        // 它压根没有能力判断 DSH 起没起，只能问外壳（2026-10-21 老大报的
+        // 「没启动 DSH 点重连也提示连接成功」，根因就是页面在自说自话）。
+        bool manualProbe;
         DateTime lastPageCheck = DateTime.MinValue;
 
         /// <summary>当前页面是不是插件服务器那版（能拿真数据的那版）</summary>
