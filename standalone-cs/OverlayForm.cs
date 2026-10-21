@@ -125,6 +125,20 @@ namespace Ojingjing
         struct CardRect { public int X, Y, W, H, R; }
         readonly System.Collections.Generic.List<CardRect> cardRects = new System.Collections.Generic.List<CardRect>();
         bool hasCard;
+        // 外壳自己量的可见区域（备用路径）。
+        // 为什么需要：多块协议是 0.5.0 才有的，插件侧如果还是老版本（实测 DSH 里装的
+        // 0.4.1 只报 {type:"card",x,y,w,h,radius} 一个 stage 外接矩形），新外壳认不出来，
+        // 就只能退回整窗外形 —— stage 的 34px 内缩透出窗体深底，正是老大 2026-10-21
+        // 报的「连接了 dsh 后开始有黑框」。这条路径让窗口外形跟页面协议版本脱钩。
+        readonly System.Collections.Generic.List<CardRect> selfRects = new System.Collections.Generic.List<CardRect>();
+        // 自测量时的窗口物理尺寸：同一尺寸量过一次就不再重复跑脚本
+        int selfRectsW;
+        int selfRectsH;
+        bool selfMeasureBusy;
+        int selfMeasureW;
+        int selfMeasureH;
+        // 「疑似页面还没重排」的补量只允许一次，防止无限重测
+        bool selfStaleRetry;
         // 裁剪失败后的重试次数（页面报新几何时归零），见 regionTimer.Tick
         int cardRetry;
         // 陪伴记账（A3）：15s 一拍，窗口收起来（托盘隐藏）不算——用户看不见鲸鱼。
@@ -235,23 +249,32 @@ namespace Ojingjing
             {
                 regionTimer.Stop();
                 // 页面报过几何就按那些块裁（切掉内缩和 form 之间的空隙，没有黑边）。
-                if (hasCard)
+                if (hasCard && ApplyCardRects(cardRects))
                 {
-                    if (ApplyCardRects())
-                    {
-                        cardRetry = 0;
-                        return;
-                    }
-                    // 坐标还没跟上新窗口（resize 刚发生、页面还在量）：先按整窗外形过渡，
-                    // 稍后再试几次。**不把 hasCard 清掉** —— 清了就再也回不来，
-                    // 页面只在几何变化时才上报，稳定的界面会一直顶着整窗深底。
-                    if (cardRetry < 3)
-                    {
-                        cardRetry += 1;
-                        regionTimer.Start();
-                    }
+                    cardRetry = 0;
+                    return;
+                }
+                // 页面没报多块几何（老版本插件页）：用外壳自己量的那份。
+                // 必须核对尺寸 —— 窗口刚放大时手上这份还是小球时代的坐标，
+                // 虽然没越界（球本来就在左上角），直接套上去会把面板裁成一个小圆，
+                // 看起来就是「展开瞬间闪一下球」。尺寸不匹配就当作过期，重新量。
+                if (!hasCard && SelfRectsCurrent() && ApplyCardRects(selfRects))
+                {
+                    cardRetry = 0;
+                    return;
+                }
+                // 坐标还没跟上新窗口（resize 刚发生、页面还在量）：先按整窗外形过渡，
+                // 稍后再试几次。**不把 hasCard 清掉** —— 清了就再也回不来，
+                // 页面只在几何变化时才上报，稳定的界面会一直顶着整窗深底。
+                if (hasCard && cardRetry < 3)
+                {
+                    cardRetry += 1;
+                    regionTimer.Start();
                 }
                 ApplyRegionFallback();
+                // 页面这一版不报多块（或报的还没跟上）：让外壳自己量一次，
+                // 量到就把上面那块整窗深底换掉。异步回来，最多闪一帧。
+                if (!hasCard) SelfMeasure();
             };
 
             company = new Companionship(Path.Combine(settings.ConfigDir, "companionship.json"));
@@ -460,26 +483,32 @@ namespace Ojingjing
         /// 返回 false = 这份几何已经对不上窗口（收缩动画那一瞬：卡片坐标还在、窗口已缩），
         /// 调用方退回整窗外形，等页面在新尺寸里重报。
         /// </summary>
-        bool ApplyCardRects()
+        bool ApplyCardRects(System.Collections.Generic.List<CardRect> src)
         {
-            if (cardRects.Count == 0) return false;
+            if (src == null || src.Count == 0) return false;
             Native.RECT rc;
             if (!Native.GetClientRect(Handle, out rc)) return false;
             int winW = rc.Right - rc.Left;
             int winH = rc.Bottom - rc.Top;
             if (winW <= 0 || winH <= 0) return false;
             // 越界超过 4px 就当这帧不可信 —— 动画中间帧的坐标常常还在旧窗口里
-            for (int i = 0; i < cardRects.Count; i++)
+            for (int i = 0; i < src.Count; i++)
             {
-                CardRect c = cardRects[i];
+                CardRect c = src[i];
                 if (c.W <= 0 || c.H <= 0) return false;
-                if (c.X < -4 || c.Y < -4 || c.X + c.W > winW + 4 || c.Y + c.H > winH + 4) return false;
+                if (c.X < -4 || c.Y < -4 || c.X + c.W > winW + 4 || c.Y + c.H > winH + 4)
+                {
+                    ShellSettings.Trace("卡片几何越界：" + (hasCard ? "页面" : "自测")
+                        + " 第" + i + "块 (" + c.X + "," + c.Y + " " + c.W + "x" + c.H
+                        + ") 窗口 " + winW + "x" + winH);
+                    return false;
+                }
             }
 
             IntPtr total = IntPtr.Zero;
-            for (int i = 0; i < cardRects.Count; i++)
+            for (int i = 0; i < src.Count; i++)
             {
-                CardRect c = cardRects[i];
+                CardRect c = src[i];
                 int x = c.X, y = c.Y;
                 int min = Math.Min(c.W, c.H);
                 IntPtr one;
@@ -519,10 +548,155 @@ namespace Ojingjing
             Native.SetWindowRgn(Handle, total, true);   // 成功后区域归系统所有
 
             // 日志：块数和第一块就够定位了，别每个 tick 刷屏
-            CardRect f = cardRects[0];
-            ShellSettings.Trace("按卡片裁剪 " + cardRects.Count + " 块 (" + f.X + "," + f.Y + ") "
-                + f.W + "x" + f.H + " r" + f.R + " 窗口 " + winW + "x" + winH);
+            CardRect f = src[0];
+            ShellSettings.Trace("按卡片裁剪 " + src.Count + " 块 (" + f.X + "," + f.Y + ")"
+                + (hasCard ? "" : " [外壳自测]")
+                + " " + f.W + "x" + f.H + " r" + f.R + " 窗口 " + winW + "x" + winH);
             return true;
+        }
+
+        /* ---------------- 外壳自测量（页面报不出多块时用） ---------------- */
+
+        /// <summary>
+        /// 在页面里量每块 .form 的可见区域（物理像素），逻辑跟 web/embed.js 的 cardRects()
+        /// 保持一致：.form 各一块、旋转的光环按 CSS 常量撑出、探出球的角标单独一块。
+        /// 只用 ES5 + 单引号，方便塞进 C# 的 verbatim 字符串。
+        /// </summary>
+        const string MeasureScript = @"(function(){
+  var st = document.getElementById('xj-stage');
+  if (!st) return [];
+  var d = window.devicePixelRatio || 1, out = [], i;
+  var forms = st.querySelectorAll('.form');
+  for (i = 0; i < forms.length; i++) {
+    var el = forms[i];
+    if (el.classList && el.classList.contains('xj-leaving')) continue;
+    var r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    var rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+    var pad = 0, aura = el.querySelector ? el.querySelector('.aura.show') : null;
+    if (aura) {
+      var ins = Math.abs(parseFloat(getComputedStyle(aura).top) || 0);
+      pad = (ins > 0 ? ins : 3) + 2;
+    }
+    out.push({ x: Math.round((r.left - pad) * d), y: Math.round((r.top - pad) * d),
+               w: Math.round((r.width + pad * 2) * d), h: Math.round((r.height + pad * 2) * d),
+               r: Math.round(rad * d) });
+  }
+  var badges = st.querySelectorAll('.badges .badge');
+  for (i = 0; i < badges.length; i++) {
+    var b = badges[i], cs = getComputedStyle(b);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+    var br = b.getBoundingClientRect();
+    if (br.width < 4 || br.height < 4) continue;
+    var brad = parseFloat(cs.borderTopLeftRadius);
+    out.push({ x: Math.round(br.left * d), y: Math.round(br.top * d),
+               w: Math.round(br.width * d), h: Math.round(br.height * d),
+               r: Math.round((isNaN(brad) ? br.width / 2 : brad) * d) });
+  }
+  return out;
+})()";
+
+        /// <summary>自测那份几何是不是当前窗口尺寸下量的（窗口变了就过期了）。</summary>
+        bool SelfRectsCurrent()
+        {
+            if (selfRects.Count == 0) return false;
+            Native.RECT rc;
+            if (!Native.GetClientRect(Handle, out rc)) return false;
+            return (rc.Right - rc.Left) == selfRectsW && (rc.Bottom - rc.Top) == selfRectsH;
+        }
+
+        /// <summary>异步量一次。同一窗口尺寸量过就不再重复（几何只在尺寸变化时变）。</summary>
+        void SelfMeasure()
+        {
+            if (selfMeasureBusy) return;
+            if (web == null || web.CoreWebView2 == null) return;
+            Native.RECT rc;
+            if (!Native.GetClientRect(Handle, out rc)) return;
+            int w = rc.Right - rc.Left;
+            int h = rc.Bottom - rc.Top;
+            if (w <= 0 || h <= 0) return;
+            if (selfRects.Count > 0 && w == selfRectsW && h == selfRectsH) return;
+            selfMeasureBusy = true;
+            selfMeasureW = w;
+            selfMeasureH = h;
+            try
+            {
+                web.CoreWebView2.ExecuteScriptAsync(MeasureScript).ContinueWith(
+                    delegate(System.Threading.Tasks.Task<string> t)
+                    {
+                        string raw = null;
+                        try
+                        {
+                            if (t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion) raw = t.Result;
+                        }
+                        catch
+                        {
+                            // 页面正在导航 / 已卸载：这一拍量不到就算了，下一拍再来
+                        }
+                        try
+                        {
+                            BeginInvoke((Action)delegate { OnSelfMeasured(raw); });
+                        }
+                        catch
+                        {
+                            // 窗口已关闭
+                        }
+                    });
+            }
+            catch
+            {
+                selfMeasureBusy = false;
+            }
+        }
+
+        void OnSelfMeasured(string raw)
+        {
+            selfMeasureBusy = false;
+            if (string.IsNullOrEmpty(raw) || raw == "null") return;
+            // ExecuteScriptAsync 的返回值就是 JS 结果的 JSON：期望 [{"x":…,"y":…},…]。
+            // 结构固定、无嵌套，复用 JsonInt 逐块切就够，不必上反序列化器。
+            var parsed = new System.Collections.Generic.List<CardRect>();
+            int i = 0;
+            while (i < raw.Length)
+            {
+                int a = raw.IndexOf('{', i);
+                if (a < 0) break;
+                int b = raw.IndexOf('}', a);
+                if (b < 0) break;
+                string body = raw.Substring(a, b - a + 1);
+                CardRect c = new CardRect();
+                c.X = JsonInt(body, "x");
+                c.Y = JsonInt(body, "y");
+                c.W = JsonInt(body, "w");
+                c.H = JsonInt(body, "h");
+                c.R = JsonInt(body, "r");
+                if (c.W > 0 && c.H > 0) parsed.Add(c);
+                i = b + 1;
+            }
+            if (parsed.Count == 0) return;
+            selfRects.Clear();
+            selfRects.AddRange(parsed);
+            selfRectsW = selfMeasureW;
+            selfRectsH = selfMeasureH;
+            // 保险：量到的块全都远小于窗口，多半是「窗口刚放大、页面还没重排」，
+            // 这份几何套上去会把面板裁成一个小球。补量一次再说。
+            int maxW = 0;
+            for (int k = 0; k < selfRects.Count; k++)
+            {
+                if (selfRects[k].W > maxW) maxW = selfRects[k].W;
+            }
+            if (selfMeasureW > 240 && maxW * 3 < selfMeasureW && !selfStaleRetry)
+            {
+                selfStaleRetry = true;
+                selfRects.Clear();
+                selfRectsW = 0;
+                selfRectsH = 0;
+                regionTimer.Stop();
+                regionTimer.Start();
+                return;
+            }
+            selfStaleRetry = false;
+            if (!hasCard) ApplyCardRects(selfRects);
         }
 
         /* ---------------- 位置记忆与拖拽 ---------------- */

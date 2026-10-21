@@ -70,7 +70,14 @@ namespace Ojingjing
                     cardRetry = 0;
                     // 展开/收起动画第一帧可能还在旧窗口坐标系里，越界就先不动外形，
                     // regionTimer 会再试几次（页面一量到新尺寸就重报）
-                    ApplyCardRects();
+                    ApplyCardRects(cardRects);
+                }
+                else if (raw.IndexOf("\"rects\":", StringComparison.Ordinal) < 0)
+                {
+                    // 老版本插件页（0.4.1 只报单块 {x,y,w,h,radius}）：协议对不上，交给
+                    // 外壳自己量 .form（见 SelfMeasure）。这里顺手让旧的重量一次，
+                    // 否则展开/收起时外形会停在上一形态。
+                    SelfMeasure();
                 }
             }
             else if (type == "drag")
