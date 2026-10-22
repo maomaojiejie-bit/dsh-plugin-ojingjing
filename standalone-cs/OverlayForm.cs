@@ -137,6 +137,13 @@ namespace Ojingjing
         bool selfMeasureBusy;
         int selfMeasureW;
         int selfMeasureH;
+        // 连续多少次量到的几何与已用上的那份完全一致。>=1 才算稳定，可以收工；
+        // 0 表示还在动（展开/收起动画中几何每帧都在变），必须继续跟。
+        int selfSame;
+        // 自测路径的重试计数。动画中量到的中间帧可能越界（被拒），也可能是
+        // 「还没到位」的半成品 —— 这两种都要在下一拍重来，所以单独立一个计数，
+        // 上限 24 拍（约 3.4s）防止病理情况下永远收不了工。
+        int selfRetry;
         // 「疑似页面还没重排」的补量只允许一次，防止无限重测
         bool selfStaleRetry;
         // 裁剪失败后的重试次数（页面报新几何时归零），见 regionTimer.Tick
@@ -254,24 +261,49 @@ namespace Ojingjing
                     cardRetry = 0;
                     return;
                 }
-                // 页面没报多块几何（老版本插件页）：用外壳自己量的那份。
-                // 必须核对尺寸 —— 窗口刚放大时手上这份还是小球时代的坐标，
-                // 虽然没越界（球本来就在左上角），直接套上去会把面板裁成一个小圆，
-                // 看起来就是「展开瞬间闪一下球」。尺寸不匹配就当作过期，重新量。
+                bool applied = false;
                 if (!hasCard && SelfRectsCurrent() && ApplyCardRects(selfRects))
                 {
+                    applied = true;
                     cardRetry = 0;
-                    return;
+                    if (selfSame >= 1)
+                    {
+                        // 连续两次量到同一样：几何稳定了，收工
+                        selfRetry = 0;
+                        return;
+                    }
+                    // 还在动（展开/收起动画进行中）：继续跟到稳定值为止。
+                    // 半路收工会把中间帧当成最终外形 —— 表单外缘会被切掉一小圈，
+                    // 而且因为「这个尺寸量过了」再也不重量，那个错误外形会一直留着。
+                }
+                if (!hasCard)
+                {
+                    if (!applied)
+                    {
+                        // 这份几何用不上（越界 / 尺寸过期）：**必须丢掉**。
+                        // 留着就等于把坏数据当缓存 —— SelfMeasure 以窗口尺寸为键，
+                        // 「这个尺寸量过了」不再量，定时器也不会重启，于是整段气泡
+                        // 期间都顶着整窗深底。2026-10-22 老大报的「连接了 dsh 后
+                        // 还有黑框」实测就是这条：展开动画带着 transform，
+                        // getBoundingClientRect 量到 (-113,-134) 499x459 这种越界值
+                        // → 被拒 → 缓存不退 → 黑框挂到收起为止。
+                        selfRects.Clear();
+                        selfRectsW = 0;
+                        selfRectsH = 0;
+                    }
+                    selfSame = 0;
+                    selfRetry += 1;
+                    if (selfRetry < 24) regionTimer.Start();
                 }
                 // 坐标还没跟上新窗口（resize 刚发生、页面还在量）：先按整窗外形过渡，
                 // 稍后再试几次。**不把 hasCard 清掉** —— 清了就再也回不来，
                 // 页面只在几何变化时才上报，稳定的界面会一直顶着整窗深底。
-                if (hasCard && cardRetry < 3)
+                else if (!applied && cardRetry < 3)
                 {
                     cardRetry += 1;
                     regionTimer.Start();
                 }
-                ApplyRegionFallback();
+                if (!applied) ApplyRegionFallback();
                 // 页面这一版不报多块（或报的还没跟上）：让外壳自己量一次，
                 // 量到就把上面那块整窗深底换掉。异步回来，最多闪一帧。
                 if (!hasCard) SelfMeasure();
@@ -428,9 +460,24 @@ namespace Ojingjing
             int y = Math.Max(screen.Top, Math.Min(screen.Bottom - h, bottom - h));
             Location = new Point(x, y);
             ShellSettings.Trace("窗口 " + w + "x" + h + " @" + x + "," + y + (HitMode() == 0 ? "" : " (hit mode " + HitMode() + ")"));
+            // 换了尺寸，自测那份几何和稳定计数都作废，下一拍从头跟
+            selfRectsW = 0;
+            selfRectsH = 0;
+            selfSame = 0;
+            selfRetry = 0;
             // 不透明模式：等页面把新尺寸的画面画出来再裁外形（立刻裁会让 WebView2 不再合成）
             regionTimer.Stop();
             regionTimer.Start();
+        }
+
+        /// <summary>两份几何逐块比一遍（顺序敏感，页面每次量的顺序一致）。</summary>
+        static bool RectsEqual(System.Collections.Generic.List<CardRect> a, System.Collections.Generic.List<CardRect> b)
+        {
+            for (int i = 0; i < a.Count; i++)
+            {
+                if (a[i].X != b[i].X || a[i].Y != b[i].Y || a[i].W != b[i].W || a[i].H != b[i].H || a[i].R != b[i].R) return false;
+            }
+            return true;
         }
 
         static int HitMode()
@@ -561,11 +608,37 @@ namespace Ojingjing
         /// 在页面里量每块 .form 的可见区域（物理像素），逻辑跟 web/embed.js 的 cardRects()
         /// 保持一致：.form 各一块、旋转的光环按 CSS 常量撑出、探出球的角标单独一块。
         /// 只用 ES5 + 单引号，方便塞进 C# 的 verbatim 字符串。
+        /// 返回数组里可能带一个 {"anim":1} 标记：页面自己还在跑过渡动画。动画期间
+        /// transform 会把外接框撑大/挪出窗口（spring 过冲），量到的几何是中间帧 ——
+        /// 能用（贴着视觉），但不能当最终外形。外壳看到这个标记就继续跟，直到动画停下；
+        /// 否则半路收工会把表单外缘切掉一小圈，而且因为缓存再也不重量。
         /// </summary>
         const string MeasureScript = @"(function(){
   var st = document.getElementById('xj-stage');
   if (!st) return [];
   var d = window.devicePixelRatio || 1, out = [], i;
+
+  // 表单 / 舞台 / 角标自己身上有没有还没跑完的过渡（不含子树：鲸鱼呼吸、
+  // 光环旋转那些动的是内容，不影响外框；无限迭代的直接跳过）
+  function animating() {
+    var els = [st], fs = st.querySelectorAll('.form'), bs = st.querySelectorAll('.badges .badge');
+    for (i = 0; i < fs.length; i++) els.push(fs[i]);
+    for (i = 0; i < bs.length; i++) els.push(bs[i]);
+    for (i = 0; i < els.length; i++) {
+      if (!els[i].getAnimations) continue;
+      var anims = els[i].getAnimations();
+      for (var j = 0; j < anims.length; j++) {
+        if (anims[j].playState !== 'running') continue;
+        var it = 1;
+        try { it = anims[j].effect.getTiming().iterations; } catch (e) {}
+        if (it === Infinity) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+  if (animating()) out.push({ anim: 1 });
+
   var forms = st.querySelectorAll('.form');
   for (i = 0; i < forms.length; i++) {
     var el = forms[i];
@@ -605,7 +678,7 @@ namespace Ojingjing
             return (rc.Right - rc.Left) == selfRectsW && (rc.Bottom - rc.Top) == selfRectsH;
         }
 
-        /// <summary>异步量一次。同一窗口尺寸量过就不再重复（几何只在尺寸变化时变）。</summary>
+        /// <summary>异步量一次。同一尺寸量过、几何也已稳定就不再重复跑脚本。</summary>
         void SelfMeasure()
         {
             if (selfMeasureBusy) return;
@@ -615,7 +688,10 @@ namespace Ojingjing
             int w = rc.Right - rc.Left;
             int h = rc.Bottom - rc.Top;
             if (w <= 0 || h <= 0) return;
-            if (selfRects.Count > 0 && w == selfRectsW && h == selfRectsH) return;
+            // 注意这个条件是「量过 + 用上了 + 连续两次一样」三个都要缺一不可。
+            // 早期版本只判尺寸，量到一份越界的坏几何也当宝贝缓存起来，
+            // 于是再也不重量 —— 黑框挂整段气泡就是那么来的。
+            if (selfRects.Count > 0 && w == selfRectsW && h == selfRectsH && selfSame >= 1) return;
             selfMeasureBusy = true;
             selfMeasureW = w;
             selfMeasureH = h;
@@ -674,10 +750,20 @@ namespace Ojingjing
                 i = b + 1;
             }
             if (parsed.Count == 0) return;
+            // 页面还在跑过渡动画（MeasureScript 的 {"anim":1} 标记）：这时的几何是
+            // 中间帧，spring 尾巴每帧只挪零点几个像素，取整后可能连续几次完全一样 ——
+            // 只比几何会被这种假稳定骗着提前收工。动画没停就不算稳定。
+            bool busy = raw.IndexOf("\"anim\":1", StringComparison.Ordinal) >= 0;
+            // 跟上一份比一下：一样就累加稳定计数，不一样就归零（动画还在跑）。
+            // 这个计数是「能不能收工」的唯一依据，见 regionTimer.Tick。
+            bool same = !busy && parsed.Count == selfRects.Count
+                && selfMeasureW == selfRectsW && selfMeasureH == selfRectsH
+                && RectsEqual(selfRects, parsed);
             selfRects.Clear();
             selfRects.AddRange(parsed);
             selfRectsW = selfMeasureW;
             selfRectsH = selfMeasureH;
+            selfSame = same ? selfSame + 1 : 0;
             // 保险：量到的块全都远小于窗口，多半是「窗口刚放大、页面还没重排」，
             // 这份几何套上去会把面板裁成一个小球。补量一次再说。
             int maxW = 0;
