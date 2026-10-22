@@ -98,7 +98,9 @@ namespace Ojingjing
             }
             else if (type == "shot-action")
             {
-                OnShotAction(JsonString(raw, "action"), JsonString(raw, "text"));
+                // sessionId：用户在截图卡片上亲手挑的会话（2026-10-22 加的「选择发送对话」）。
+                // 空串 = 没挑，OnShotAction 那侧按老规矩自动挑（干活中的优先）。
+                OnShotAction(JsonString(raw, "action"), JsonString(raw, "text"), JsonString(raw, "sessionId"));
             }
             else if (type == "shot-capture")
             {

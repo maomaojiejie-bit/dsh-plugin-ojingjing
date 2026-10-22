@@ -10,6 +10,7 @@
  */
 (function () {
   var XJ = (window.XJ = window.XJ || {});
+  var h = XJ.dom.h;
 
   var state = {
     active: false,
@@ -21,6 +22,11 @@
     message: "",
     polishNote: "",
     sessionTitle: "",
+    // 目标会话：外壳抓完图时把它挑的那个带过来（meta.sessionId）当默认值，
+    // 用户可以在卡片上换。空串 = 还没选（交给外壳自动挑）。
+    sessionId: "",
+    // 会话选择器开合（声明式：跟着卡片一起重建，不会因轮询重渲染丢掉）
+    pickerOpen: false,
   };
 
   // WebView2 外壳（host=app）没有 window.xjNative，只有 postMessage：
@@ -49,7 +55,19 @@
 
   function post(action, json) {
     if (!window.XJ || !XJ.embed || !XJ.embed.post) return;
-    XJ.embed.post({ type: "shot-action", action: action, text: textOf(json) });
+    var o = {};
+    try {
+      o = JSON.parse(json) || {};
+    } catch (err) {
+      o = {};
+    }
+    XJ.embed.post({
+      type: "shot-action",
+      action: action,
+      text: textOf(json),
+      // 发送时带上用户挑的会话；空串 = 没挑，外壳按老规矩自动挑
+      sessionId: String(o.sessionId || ""),
+    });
   }
 
   function bridge() {
@@ -78,10 +96,12 @@
     state.width = meta.width || 0;
     state.height = meta.height || 0;
     state.sessionTitle = meta.sessionTitle || "";
+    state.sessionId = meta.sessionId || "";
     state.text = meta.text || "";
     state.status = "draft";
     state.message = "";
     state.polishNote = "";
+    state.pickerOpen = false;
     state.openedAt = Date.now();
     XJ.state.store.emit && XJ.state.store.emit();
   }
@@ -90,6 +110,7 @@
     state.active = false;
     state.status = "draft";
     state.message = "";
+    state.pickerOpen = false;
     XJ.state.store.emit && XJ.state.store.emit();
   }
 
@@ -122,8 +143,9 @@
     if (!state.active || state.status === "sending") return;
     state.status = "sending";
     state.message = "正在发送…";
+    state.pickerOpen = false;
     XJ.state.store.emit && XJ.state.store.emit();
-    call("sendShot", JSON.stringify({ text: state.text }));
+    call("sendShot", JSON.stringify({ text: state.text, sessionId: state.sessionId || "" }));
   }
 
   function retake() {
@@ -142,13 +164,93 @@
     }
   }
 
+  // ---------------------------------------------------------------- 目标会话
+  /** 当前挑中的会话名：挑了就用商店里的（演示模式会降级成「会话 N」），没挑就用外壳带的默认标题 */
+  function targetTitle(s) {
+    if (state.sessionId) {
+      var sess = XJ.state.sessionById(s, state.sessionId);
+      if (sess) return XJ.state.displayTitle(s, sess);
+    }
+    return state.sessionTitle || "";
+  }
+
+  function targetBtn(s) {
+    var busy = state.status === "sending" || state.status === "polishing" || state.status === "ok" || state.status === "fail";
+    var t = targetTitle(s);
+    return h(
+      "button",
+      {
+        class: "shot-target",
+        type: "button",
+        title: t ? "发送到《" + t + "》，点击更换" : "选择发送到哪个会话",
+        disabled: busy ? true : null,
+        onClick: function () {
+          state.pickerOpen = !state.pickerOpen;
+          XJ.state.store.emit();
+        },
+      },
+      XJ.icon(t ? "chat" : "plus", 12),
+      h("span", { class: "ellipsis" }, t ? "《" + t + "》" : "选个会话"),
+      XJ.icon("chevronDown", 12)
+    );
+  }
+
+  function pickerNode(s) {
+    var pendingBy = {};
+    XJ.state.pendingList(s).forEach(function (p) {
+      if (!pendingBy[p.sessionId]) pendingBy[p.sessionId] = [];
+      pendingBy[p.sessionId].push(p);
+    });
+    var alive = XJ.state.sortedSessions(s).filter(function (x) {
+      return x.state !== "closed";
+    });
+    var rows = alive.map(function (sess) {
+      var on = sess.id === state.sessionId;
+      return h(
+        "button",
+        {
+          class: "xj-pick-row" + (on ? " on" : ""),
+          type: "button",
+          onClick: function () {
+            state.sessionId = sess.id;
+            state.pickerOpen = false;
+            XJ.state.store.emit();
+          },
+        },
+        XJ.icon("chat", 13),
+        h(
+          "div",
+          { class: "xj-pick-main" },
+          h("span", { class: "xj-pick-title ellipsis" }, XJ.state.displayTitle(s, sess)),
+          h(
+            "span",
+            { class: "xj-pick-sub ellipsis" },
+            sess.state === "working"
+              ? XJ.state.presenting(s)
+                ? "正在处理"
+                : sess.action || "正在处理"
+              : XJ.dom.fmtRel(sess.lastActivityAt)
+          )
+        ),
+        XJ.ui.sessionPill(sess, (pendingBy[sess.id] || []).length),
+        on ? h("span", { class: "xj-pick-check" }, XJ.icon("check", 13)) : null
+      );
+    });
+    return h(
+      "div",
+      { class: "shot-pick" },
+      h("div", { class: "shot-pick-head" }, "发送到"),
+      rows.length
+        ? h("div", { class: "shot-pick-list" }, rows)
+        : h("div", { class: "shot-pick-empty" }, "没有可发送的会话 —— Harness 没开？")
+    );
+  }
+
   // ---------------------------------------------------------------- 视图
   function node(s) {
-    var h = XJ.dom.h;
     var busy = state.status === "sending" || state.status === "polishing";
     var okState = state.status === "ok";
     var failState = state.status === "fail";
-
     var ta = h("textarea", {
       class: "shot-input",
       rows: 2,
@@ -199,12 +301,8 @@
           "div",
           { class: "shot-head" },
           h("span", { class: "shot-title" }, "截图提问"),
-          h(
-            "span",
-            { class: "shot-meta" },
-            state.width && state.height ? state.width + " × " + state.height : "",
-            state.sessionTitle ? " · 发给《" + XJ.dom.truncate(state.sessionTitle, 12) + "》" : ""
-          ),
+          h("span", { class: "shot-meta" }, state.width && state.height ? state.width + " × " + state.height : ""),
+          targetBtn(s),
           h(
             "button",
             {
@@ -217,6 +315,8 @@
             XJ.icon("close", 16)
           )
         ),
+        // 会话选择器：内联展开（不搞浮层——独立窗高度跟内容走，浮层探出窗口会被裁）
+        state.pickerOpen ? pickerNode(s) : null,
         h(
           "div",
           { class: "shot-thumb" },

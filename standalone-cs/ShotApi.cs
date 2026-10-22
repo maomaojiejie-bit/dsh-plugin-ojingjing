@@ -35,6 +35,15 @@ namespace Ojingjing
         /// <summary>目标会话：正在执行的优先，否则最近一个。拿不到返回 null。</summary>
         public static string PickSession(int port, out string title)
         {
+            return PickSession(port, "", out title);
+        }
+
+        /// <summary>
+        /// 带偏好 id 的目标会话：用户在截图卡片上亲手挑了哪个就发哪个。
+        /// 偏好 id 不在列表里（会话已经关了）就退回自动挑 —— 别把图发到一个死会话上。
+        /// </summary>
+        public static string PickSession(int port, string preferId, out string title)
+        {
             title = "";
             Dictionary<string, object> state = GetJson(Base(port) + "/xj/state", 3000, null);
             if (state == null) return null;
@@ -46,6 +55,7 @@ namespace Ojingjing
             string working = null;
             string workingTitle = null;
             string firstTitle = null;
+            string preferTitle = null;
             foreach (object item in list)
             {
                 Dictionary<string, object> s = item as Dictionary<string, object>;
@@ -53,6 +63,7 @@ namespace Ojingjing
                 string id = Str(s, "id");
                 if (string.IsNullOrEmpty(id)) continue;
                 string t = Str(s, "title");
+                if (preferId.Length > 0 && id == preferId) preferTitle = t;
                 if (first == null)
                 {
                     first = id;
@@ -64,6 +75,11 @@ namespace Ojingjing
                     workingTitle = t;
                 }
             }
+            if (preferTitle != null)
+            {
+                title = preferTitle;
+                return preferId;
+            }
             if (working != null)
             {
                 title = workingTitle ?? "";
@@ -73,11 +89,12 @@ namespace Ojingjing
             return first;
         }
 
-        /// <summary>把截图投进会话；返回是否成功 + 给人看的一句话。</summary>
-        public static bool PostScreenshot(int port, byte[] png, string question, out string message)
+        /// <summary>把截图投进会话；返回是否成功 + 给人看的一句话。
+        /// preferId 是用户在卡片上挑的会话（空 = 按老规矩自动挑）。</summary>
+        public static bool PostScreenshot(int port, byte[] png, string question, string preferId, out string message)
         {
             string title;
-            string sessionId = PickSession(port, out title);
+            string sessionId = PickSession(port, preferId ?? "", out title);
             if (string.IsNullOrEmpty(sessionId))
             {
                 message = "没有可发送的会话";

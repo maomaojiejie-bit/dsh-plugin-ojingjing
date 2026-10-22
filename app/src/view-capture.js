@@ -22,6 +22,12 @@
     drag: null,
     question: "",
     keyHandler: null,
+    // 目标会话选择器（发送卡里那个「《会话名》」 pill 点开的浮层）
+    picker: null,
+    pickerOutside: null,
+    targetBtn: null,
+    targetLead: null,
+    targetPillLabel: null,
   };
 
   const TOOLS = [
@@ -74,6 +80,11 @@
     cap.keyHandler = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        // 选择器开着的时候，Esc 只收浮层，不退出确认卡（不然一按 Esc 白选一场）
+        if (cap.picker) {
+          closePicker();
+          return;
+        }
         if (cap.phase === "confirming") backToEditing();
         else stop();
       }
@@ -476,6 +487,146 @@
     if (cap.undoBtn) cap.undoBtn.disabled = cap.annots.length === 0;
   }
 
+  /* ============================ 目标会话选择器 ============================ */
+  /* 发送卡里的「《会话名》」pill：点开一个浮层，列出所有能发的会话 + 「新会话」。
+     取代原来那个「点一下切下一个」的循环按钮 —— 会话一多，循环等于没得选。 */
+
+  /** 当前生效的目标 id：显式选的 > 自动判定的 > 新会话 */
+  function currentTargetId(s) {
+    if (s.composer.targetSessionId) return s.composer.targetSessionId;
+    const t = XJ.state.resolveTargetSession(s);
+    return t ? t.id : XJ.state.NEW_SESSION;
+  }
+
+  /** 列表行副标题：干活中的显示在干什么，闲着的显示多久没动静 */
+  function sessionSubText(s, sess) {
+    if (sess.state === "working") {
+      return XJ.state.presenting(s) ? "正在处理" : sess.action || "正在处理";
+    }
+    return XJ.dom.fmtRel(sess.lastActivityAt);
+  }
+
+  function buildTargetBtn(s) {
+    const fresh = !XJ.state.resolveTargetSession(s) || s.composer.targetSessionId === XJ.state.NEW_SESSION;
+    cap.targetLead = h("span", { class: "cap-target-lead" }, XJ.icon(fresh ? "plus" : "chat", 12));
+    cap.targetPillLabel = h(
+      "span",
+      { class: "ellipsis" },
+      fresh ? "新会话" : "《" + XJ.state.displayTitle(s, XJ.state.resolveTargetSession(s)) + "》"
+    );
+    cap.targetBtn = h(
+      "button",
+      {
+        class: "cap-target",
+        type: "button",
+        title: "选择发送到哪个会话",
+        "aria-haspopup": "listbox",
+        onclick: () => (cap.picker ? closePicker() : openPicker()),
+      },
+      cap.targetLead,
+      cap.targetPillLabel,
+      XJ.icon("chevronDown", 12)
+    );
+    return h("div", { class: "cap-target-wrap" }, cap.targetBtn);
+  }
+
+  /** 选了之后刷新 pill 文案与前导图标（不重开确认卡，草稿不动） */
+  function syncTargetPill() {
+    if (!cap.targetPillLabel) return;
+    const s = S();
+    const t = XJ.state.resolveTargetSession(s);
+    const fresh = !t || s.composer.targetSessionId === XJ.state.NEW_SESSION;
+    cap.targetPillLabel.textContent = fresh ? "新会话" : "《" + XJ.state.displayTitle(s, t) + "》";
+    if (cap.targetLead) cap.targetLead.replaceChildren(XJ.icon(fresh ? "plus" : "chat", 12));
+  }
+
+  function openPicker() {
+    if (cap.picker) return;
+    const s = S();
+    const cur = currentTargetId(s);
+    const alive = XJ.state.sortedSessions(s).filter((x) => x.state !== "closed");
+    const pendingBy = new Map();
+    XJ.state.pendingList(s).forEach((p) => {
+      if (!pendingBy.has(p.sessionId)) pendingBy.set(p.sessionId, []);
+      pendingBy.get(p.sessionId).push(p);
+    });
+
+    const list = h("div", { class: "cap-pick-list", role: "listbox", "aria-label": "可选会话" });
+
+    const row = (id, lead, main, sub, pill) =>
+      h(
+        "button",
+        {
+          class: "xj-pick-row" + (id === cur ? " on" : ""),
+          type: "button",
+          role: "option",
+          "aria-selected": id === cur ? "true" : null,
+          onclick: () => {
+            XJ.state.actions.composerTarget(id);
+            syncTargetPill();
+            closePicker();
+          },
+        },
+        lead,
+        h(
+          "div",
+          { class: "xj-pick-main" },
+          h("span", { class: "xj-pick-title ellipsis" }, main),
+          sub ? h("span", { class: "xj-pick-sub ellipsis" }, sub) : null
+        ),
+        pill || null,
+        id === cur ? h("span", { class: "xj-pick-check" }, XJ.icon("check", 13)) : null
+      );
+
+    // 「新会话」永远在第一位：截图经常是「另起一摊」的问法。
+    // 但只有宿主真能建会话时才给这个选项 —— 真实 DSH 的 /xj/prompt 只收
+    // 已存在的会话，给了也发不出去（内嵌态 HostHarness 没有 newSession）。
+    if (typeof XJ.mock.harness.newSession === "function") {
+      list.appendChild(row(XJ.state.NEW_SESSION, XJ.icon("plus", 13), "新会话", "发出去会自动建一个会话"));
+    }
+
+    alive.forEach((sess) => {
+      list.appendChild(
+        row(
+          sess.id,
+          XJ.icon("chat", 13),
+          XJ.state.displayTitle(s, sess),
+          sessionSubText(s, sess),
+          XJ.ui.sessionPill(sess, (pendingBy.get(sess.id) || []).length)
+        )
+      );
+    });
+
+    cap.picker = h(
+      "div",
+      { class: "cap-picker", role: "dialog", "aria-label": "选择发送到哪个会话" },
+      h("div", { class: "cap-pick-head" }, "发送到"),
+      list
+    );
+    if (cap.targetBtn && cap.targetBtn.parentElement) cap.targetBtn.parentElement.appendChild(cap.picker);
+
+    // 点浮层外面（遮罩 / 卡片别处）就收起来；触发器自己那一下交给按钮的 toggle
+    cap.pickerOutside = (e) => {
+      if (!cap.picker) return;
+      if (cap.picker.contains(e.target)) return;
+      if (cap.targetBtn && cap.targetBtn.contains(e.target)) return;
+      closePicker();
+    };
+    if (cap.layer) cap.layer.addEventListener("mousedown", cap.pickerOutside, true);
+  }
+
+  function closePicker() {
+    if (!cap.picker) return;
+    const el = cap.picker;
+    cap.picker = null;
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 140);
+    if (cap.pickerOutside && cap.layer) {
+      cap.layer.removeEventListener("mousedown", cap.pickerOutside, true);
+    }
+    cap.pickerOutside = null;
+  }
+
   /* ============================ 发送卡 ============================ */
   function toConfirm() {
     if (!cap.sel) return;
@@ -490,9 +641,6 @@
     cap.thumbUrl = thumbUrl;
     const card = h("div", { class: "cap-confirm", role: "dialog", "aria-label": "确认发送截图" });
     cap.card = card;
-
-    const target = XJ.state.resolveTargetSession(s);
-    const targetTitle = target ? target.title : "新会话";
 
     const ta = h("textarea", {
       class: "cap-q",
@@ -517,23 +665,7 @@
         { class: "cap-thumb" },
         h("img", { src: thumbUrl, alt: "截图预览 " + w + " × " + hgt })
       ),
-      h(
-        "button",
-        {
-          class: "cap-target",
-          title: "更换目标会话",
-          onclick: (e) => {
-            const alive = s.sessions.filter((x) => x.state !== "closed");
-            if (alive.length < 2) return;
-            const idx = alive.findIndex((x) => target && x.id === target.id);
-            const next = alive[(idx + 1) % alive.length];
-            XJ.state.actions.composerTarget(next.id);
-            e.currentTarget.lastChild.textContent = "《" + next.title + "》";
-          },
-        },
-        XJ.icon("arrowRight", 12),
-        h("span", { class: "ellipsis" }, "《" + targetTitle + "》")
-      ),
+      buildTargetBtn(s),
       ta,
       h(
         "div",
@@ -571,6 +703,7 @@
   }
 
   function backToEditing() {
+    closePicker();
     if (cap.card) {
       cap.card.remove();
       cap.card = null;
@@ -650,6 +783,7 @@
   /* ============================ 收尾 ============================ */
   function stop() {
     cap.phase = "idle";
+    closePicker();
     document.body.classList.remove("xj-capturing");
     if (cap.keyHandler) document.removeEventListener("keydown", cap.keyHandler, true);
     cap.keyHandler = null;
@@ -666,6 +800,9 @@
     cap.draftEl = null;
     cap.annots = [];
     cap.drag = null;
+    cap.targetBtn = null;
+    cap.targetLead = null;
+    cap.targetPillLabel = null;
   }
 
   XJ.capture = { start };

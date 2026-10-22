@@ -16,6 +16,12 @@
     danger: { label: "删除 / 高危", rank: 5, hint: "删除文件或执行高危操作" },
   };
 
+  /* 「显式新会话」哨兵：composer.targetSessionId 存它 = 用户明确要新开一个会话。
+     没有它的时候，targetSessionId 为 null 会被 resolveTargetSession 回退成
+     「主窗口当前会话 / 最近活跃的会话」（§9.1.2 自动判定），显式的新会话意图
+     和「没指定」就分不开了 —— 截图提问的选择器要用这个区分。 */
+  const NEW_SESSION = "__new__";
+
   /* ---------- 默认设置（§8.4 完整清单） ---------- */
   function defaultSettings() {
     return {
@@ -214,6 +220,8 @@
   /** 目标会话判定顺序（§9.1.2） */
   function resolveTargetSession(s) {
     const c = s.composer;
+    // 显式新会话：直接判「没有目标」，让发送方走新建分支，别回退到任何旧会话
+    if (c.targetSessionId === NEW_SESSION) return null;
     if (c.targetSessionId) {
       const found = sessionById(s, c.targetSessionId);
       if (found && found.state !== "closed") return found;
@@ -606,6 +614,7 @@
     store,
     actions,
     RISK,
+    NEW_SESSION,
     pendingList,
     counts,
     mainStatus,

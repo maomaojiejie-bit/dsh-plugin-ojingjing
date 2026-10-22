@@ -85,15 +85,17 @@ namespace Ojingjing
             Native.ForceForeground(Handle);
 
             string title = "";
-            ShotApi.PickSession(settings.Port, out title);
+            string sid = ShotApi.PickSession(settings.Port, out title);
+            ShellSettings.Trace("截图：默认目标会话 " + (string.IsNullOrEmpty(sid) ? "(无)" : sid + " " + title));
             SendToPage("{\"type\":\"shot\",\"dataUrl\":\"data:image/png;base64," + Convert.ToBase64String(png)
                 + "\",\"width\":" + w2 + ",\"height\":" + h2
+                + ",\"sessionId\":" + JsonQuote(sid)
                 + ",\"sessionTitle\":" + JsonQuote(title) + "}");
             capturing = false;
         }
 
-        /// <summary>卡片上的「发送 / 重新截 / 优化」。</summary>
-        void OnShotAction(string action, string text)
+        /// <summary>卡片上的「发送 / 重新截 / 优化」。sessionId 是页面挑的目标（空 = 自动挑）。</summary>
+        void OnShotAction(string action, string text, string sessionId)
         {
             if (action == "capture" || action == "retake")
             {
@@ -110,13 +112,14 @@ namespace Ojingjing
                     return;
                 }
                 int port = settings.Port;
-                ShellSettings.Trace("截图：开始发送（" + png.Length + " bytes）");
+                ShellSettings.Trace("截图：开始发送（" + png.Length + " bytes，目标 "
+                    + (string.IsNullOrEmpty(sessionId) ? "自动" : sessionId) + "）");
                 System.Threading.Tasks.Task.Factory.StartNew(delegate
                 {
                     try
                     {
                         string message;
-                        bool ok = ShotApi.PostScreenshot(port, png, text, out message);
+                        bool ok = ShotApi.PostScreenshot(port, png, text, sessionId, out message);
                         PostLater("{\"type\":\"shot-done\",\"ok\":" + (ok ? "true" : "false")
                             + ",\"message\":" + JsonQuote(message) + "}");
                     }

@@ -141,7 +141,7 @@ dist\Ojingjing-CS\Ojingjing.exe
 | `{type:"drag"}` | 交给系统拖窗口（`ReleaseCapture` + `WM_NCLBUTTONDOWN`） |
 | `{type:"open-dsh"}` / `{type:"open-url", url}`（只放行 https） / `{type:"quit"}` | 打开 DSH / 浏览器 / 退出 |
 | `{type:"shot-capture"}` | 截一张 |
-| `{type:"shot-action", action, text}` | `action` = `send` / `retake` / `polish` / `capture` |
+| `{type:"shot-action", action, text, sessionId}` | `action` = `send` / `retake` / `polish` / `capture`；`sessionId` 是用户在卡片上挑的目标会话（2026-10-22「选择发送对话」，空 = 自动挑：干活中的优先，否则第一个） |
 | `{type:"settings"}` | 在外壳里弹设置窗 |
 
 外壳 → 页面（`CoreWebView2.PostWebMessageAsJson`）：
@@ -149,7 +149,7 @@ dist\Ojingjing-CS\Ojingjing.exe
 | 消息 | 作用 |
 | --- | --- |
 | `{type:"pointer", inside}` | **每 200ms 轮询真实光标是否在窗口矩形里，变了才发；进立刻、出要稳 500ms** |
-| `{type:"shot", dataUrl, width, height, sessionTitle}` | 截好图，页面弹卡片 |
+| `{type:"shot", dataUrl, width, height, sessionId, sessionTitle}` | 截好图，页面弹卡片；`sessionId`/`sessionTitle` 是外壳自动挑的默认目标（卡片上可换） |
 | `{type:"shot-done", ok, message}` / `{type:"shot-polished", text}` / `{type:"shot-polish-failed", reason}` | 发送 / 优化结果 |
 
 `pointer` 这条是修「鼠标移上去一直弹」的关键：WebView2 在自己被 resize 之后会把 CSS `:hover` 判错、

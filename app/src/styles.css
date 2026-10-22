@@ -2874,6 +2874,108 @@ body.static-frame .aura-amber {
 .cap-target:hover {
   background: rgba(124, 194, 255, 0.2);
 }
+.cap-target-lead {
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.cap-target-wrap {
+  position: relative;
+  align-self: flex-start;
+  max-width: 100%;
+}
+/* 目标会话选择器浮层：钉在 pill 正下方，深色玻璃，一次性淡入（只动 opacity/transform） */
+.cap-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 308px;
+  max-height: 272px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(19, 26, 43, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px -16px rgba(4, 8, 18, 0.75);
+  backdrop-filter: blur(20px) saturate(160%);
+  z-index: 94;
+  overflow: hidden;
+  animation: capPickIn 160ms var(--ease-out) both;
+}
+@keyframes capPickIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.cap-picker.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+}
+.cap-pick-head {
+  flex: none;
+  padding: 8px 12px 5px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+.cap-pick-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 6px 6px;
+}
+/* 会话选择行：截图确认卡（浮层）和截图提问卡（内联展开）共用 */
+.xj-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 400 var(--fs-aux) / 1.3 var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-soft);
+}
+.xj-pick-row > .icon {
+  flex: none;
+  color: var(--text-tertiary);
+}
+.xj-pick-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.xj-pick-row.on {
+  background: rgba(124, 194, 255, 0.14);
+}
+.xj-pick-row.on > .icon {
+  color: var(--accent);
+}
+.xj-pick-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.xj-pick-title {
+  font-size: var(--fs-aux);
+  color: var(--text-primary);
+}
+.xj-pick-sub {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-tertiary);
+}
+.xj-pick-check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
 .cap-q {
   width: 100%;
   resize: none;
@@ -3289,6 +3391,54 @@ html {
 }
 .shot-close {
   flex: none;
+}
+/* 目标会话 pill：点了把内联选择器展开（见 shot.js 的 pickerNode） */
+.shot-target {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  max-width: 56%;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(124, 194, 255, 0.12);
+  border: 1px solid rgba(124, 194, 255, 0.28);
+  color: var(--accent-soft);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-soft);
+}
+.shot-target:hover:not(:disabled) {
+  background: rgba(124, 194, 255, 0.2);
+}
+.shot-target:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* 内联选择器：跟着卡片长高，独立窗经 ResizeObserver 一起撑高，
+   不像浮层那样探出窗口被裁一刀 */
+.shot-pick {
+  border-radius: 10px;
+  background: rgba(13, 19, 32, 0.5);
+  border: 1px solid var(--hairline);
+  overflow: hidden;
+}
+.shot-pick-head {
+  padding: 7px 10px 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+.shot-pick-list {
+  max-height: 232px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 6px 6px;
+}
+.shot-pick-empty {
+  padding: 4px 10px 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 .shot-thumb {
   border-radius: 8px;
