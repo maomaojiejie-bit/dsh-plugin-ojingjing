@@ -172,6 +172,7 @@
       shot.open(message.dataUrl, {
         width: message.width,
         height: message.height,
+        sessionId: message.sessionId || "",
         sessionTitle: message.sessionTitle || "",
       });
       return true;
