@@ -19,7 +19,7 @@
  *   node tools/push-commits.mjs --dry-run   # 只演练：数一下要传多少东西
  *   node tools/push-commits.mjs --branch main
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import https from "node:https";
 import { fileURLToPath } from "node:url";
@@ -192,8 +192,7 @@ function parseCommit(raw) {
 }
 
 /* ---------------- 主流程 ---------------- */
-async function main() {
-  const branch = opt("branch") || gitText("rev-parse", "--abbrev-ref", "HEAD");
+async function main() {  const branch = opt("branch") || gitText("rev-parse", "--abbrev-ref", "HEAD");
   const remote = gitTry("remote", "get-url", "origin");
   const m = /github\.com[:/]([^/]+)\/([^/.]+?)(?:\.git)?$/.exec(remote || "");
   if (!m) {
@@ -396,4 +395,22 @@ async function main() {
   say("blob 实传 " + uploaded.size + " 个，tree/commit 按需新建；推完 " + commits.length + " 个提交。");
 }
 
-main().catch((e) => die(e && e.message ? e.message : String(e)));
+main().catch((e) => {
+  const msg = (e && e.message) || String(e);
+  // 本机有软件重签 TLS（MITM 代理/AV）时，Node 自带的 CA 包不认，
+  // 报 unable to verify the first certificate。Windows 证书库是认的——
+  // 带 --use-system-ca 重_exec 一次自己（只重一次，防死循环）。
+  if (/certificate|UNABLE_TO_VERIFY|SELF_SIGNED|DEPTH_ZERO/i.test(msg) && !process.env.XJ_PUSH_TLS_RETRIED) {
+    process.env.XJ_PUSH_TLS_RETRIED = "1";
+    say("TLS 证书校验失败，改用系统证书库重试（--use-system-ca）…");
+    const child = spawn(process.execPath, ["--use-system-ca", process.argv[1], ...process.argv.slice(2)], {
+      stdio: "inherit",
+      env: process.env,
+      windowsHide: true,
+    });
+    child.on("exit", (code) => process.exit(code == null ? 1 : code));
+    child.on("error", (err) => die("重试也没起来：" + err.message));
+    return;
+  }
+  die(msg);
+});
